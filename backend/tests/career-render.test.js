@@ -233,6 +233,7 @@ describe('事业推理结果渲染成散文', () => {
     })(MACHINE_SCHEMA);
     // 机读契约块里一共 72 处键名（去重后 62 个）。契约变了这条会响，属于有意的绊线。
     expect(keys).toHaveLength(72);
+    expect(new Set(keys).size).toBe(62);
     const prose = renderCareerProse(clone(SAMPLE));
     for (const k of keys) {
       expect(prose).not.toContain(k);

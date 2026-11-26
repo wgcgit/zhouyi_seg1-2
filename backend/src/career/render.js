@@ -201,7 +201,9 @@ function renderCareerProse(data) {
   // 10. 大运
   p(`## ${SECTION_TITLES.timeline}`);
   for (const group of groupTimelineByType(data.timeline)) {
-    const branches = BRANCHES_BY_TYPE[group.type];
+    // branches 由 groupTimelineByType 一并带出来（等于 BRANCHES_BY_TYPE[该类型]）。
+    // 这里不再自己查一次表 —— 两处真源迟早会分叉。
+    const branches = group.branches;
     const head = branches ? `${group.type}（${branches}）` : group.type;
     const stepText = group.steps
       .map((s) => `${s.ganZhi || ''}（${s.verdict || ''}，${s.mainTrack || ''}${s.playbook ? '，走' + s.playbook + '档' : ''}）`)
