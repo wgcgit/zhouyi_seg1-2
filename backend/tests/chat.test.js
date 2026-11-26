@@ -47,6 +47,9 @@ describe('chat 问答', () => {
       defects: [],
     });
     client.callMiniMax.mockResolvedValue('宜向北发展，水运是黄金阶段。');
+    // friendlyError 恢复成「翻译不了的错误原样返回英文 message」的真实行为，
+    // 免得某条测试用 mockReturnValue 改了它之后漏给后面的用例。
+    client.friendlyError.mockImplementation((e) => String(e && e.message));
   });
 
   test('回答原样返回', async () => {
@@ -68,6 +71,21 @@ describe('chat 问答', () => {
   test('会话不存在时返回 404', async () => {
     const res = await request(app).post('/api/chat').send({ sessionId: '不存在', message: '你好' });
     expect(res.status).toBe(404);
+    // 断言文案本身：chat 路由自己的 404 文案是「会话不存在或已过期」，
+    // 而 express 全局兜底（路由压根没匹配上）的文案是「请求的接口不存在」。
+    // 只断言状态码 404 分不清这两者，必须把文案也钉住。
+    expect(res.body.errors[0]).toContain('会话不存在');
+    // 会话不存在时不该去调模型
+    expect(client.callMiniMax).not.toHaveBeenCalled();
+  });
+
+  test('缺少会话编号时返回 400', async () => {
+    const res = await request(app).post('/api/chat').send({ message: '我适合做什么行业？' });
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0]).toContain('会话');
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    // 缺会话编号时不该去调模型
+    expect(client.callMiniMax).not.toHaveBeenCalled();
   });
 
   test('消息为空时返回 400', async () => {
@@ -87,11 +105,28 @@ describe('chat 问答', () => {
   });
 
   test('模型报错时返回 500 与中文提示', async () => {
-    client.callMiniMax.mockRejectedValue(new Error('timeout'));
+    // 故意让 friendlyError 返回**英文原文**：
+    // 这样测的才是 chat 路由自己的中文兜底（chineseError）真的挡住了英文外泄，
+    // 而不是被 mock 里的翻译顺手遮住了。
+    client.friendlyError.mockReturnValue('timeout of 300000ms exceeded');
+    client.callMiniMax.mockRejectedValue(new Error('timeout of 300000ms exceeded'));
     const id = await makeReadySession(app);
     const res = await request(app).post('/api/chat').send({ sessionId: id, message: '你好' });
     expect(res.status).toBe(500);
     expect(res.body.errors[0]).toMatch(/./);
+    // 必须是中文提示
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    // 英文原文一律不许外泄
+    expect(res.body.errors[0]).not.toMatch(/timeout/i);
+    expect(res.body.errors[0]).not.toMatch(/exceeded/i);
+  });
+
+  test('模型返回空内容时返回 500 与中文提示', async () => {
+    client.callMiniMax.mockResolvedValue('   ');
+    const id = await makeReadySession(app);
+    const res = await request(app).post('/api/chat').send({ sessionId: id, message: '你好' });
+    expect(res.status).toBe(500);
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
   });
 
   test('一次 chat 后该提问只出现一次', async () => {
