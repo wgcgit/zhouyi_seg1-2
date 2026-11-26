@@ -19,17 +19,27 @@ const CAREER_SUB_SKILLS = [
   'suiyun-shiye',
 ];
 
+/** 转义正则元字符，标题文字一律按字面量匹配 */
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * 取 `## <heading>` 到下一个 `## ` 之间的正文。
+ *
+ * 标题必须**独占一行**且**恰好**是 `## <heading>`（允许行尾空白）：
+ * `### <heading>`、`## <heading>补充`、`- ## <heading>` 都不算命中，取不到返回空串。
+ * 段落结束只看下一个 `## `；段内的 `###` 三级子节属于段内内容，必须保留。
+ *
  * @param {string} markdown
  * @param {string} heading 标题文字（不含 `## ` 前缀）
  * @returns {string} 取不到返回空串
  */
 function extractSection(markdown, heading) {
-  const marker = `## ${heading}`;
-  const start = markdown.indexOf(marker);
-  if (start === -1) return '';
-  const rest = markdown.slice(start + marker.length);
+  const re = new RegExp(`^## ${escapeRegExp(heading)}[ \\t\\r]*$`, 'm');
+  const matched = re.exec(markdown);
+  if (!matched) return '';
+  const rest = markdown.slice(matched.index + matched[0].length);
   const end = rest.search(/\n##\s/);
   return (end === -1 ? rest : rest.slice(0, end)).trim();
 }
@@ -40,12 +50,6 @@ function extractSection(markdown, heading) {
  */
 function extractInterpretation(markdown) {
   return extractSection(markdown, INTERPRET_HEADING);
-}
-
-/** 读一个 skill 文件的某一段 */
-function readSkillSection(relPath, heading) {
-  const full = path.join(SKILLS_PATH, relPath);
-  return extractSection(fs.readFileSync(full, 'utf8'), heading);
 }
 
 /** 阶段二的 system prompt：合同 + 事业知识库 + JSON Schema */
@@ -144,7 +148,9 @@ function buildChatSystemPrompt(careerJson, careerProse) {
 /** 阶段三的 user prompt：历史消息 + 本轮提问 */
 function buildChatUserPrompt(history, message) {
   const parts = [];
-  for (const m of history || []) {
+  // history 只接受数组；其余（对象 / 数字 / 字符串 / null）一律当空数组处理
+  const list = Array.isArray(history) ? history : [];
+  for (const m of list) {
     if (!m || typeof m.content !== 'string') continue;
     // assistant 的历史回答标「顾问」，user 的历史提问标「用户」
     parts.push(`${m.role === 'assistant' ? '顾问' : '用户'}：${m.content}`);
