@@ -11,6 +11,7 @@
     "build:schema": "node scripts/build-career-schema.js",
     "validate:schema": "node scripts/validate-career-schema.js",
     "smoke:frontend": "node scripts/frontend-smoke.js",
+    "smoke:e2e": "node scripts/smoke-e2e.js",
     "gen:coords": "node scripts/gen-city-coords.js",
     "xcheck": "node scripts/xcheck-derived.js"
   },

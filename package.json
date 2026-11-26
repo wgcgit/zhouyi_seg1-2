@@ -13,6 +13,7 @@
     "validate:schema": "npm --prefix backend run validate:schema",
     "gen:coords": "npm --prefix backend run gen:coords",
     "xcheck": "npm --prefix backend run xcheck",
-    "smoke:frontend": "npm --prefix backend run smoke:frontend"
+    "smoke:frontend": "npm --prefix backend run smoke:frontend",
+    "smoke:e2e": "npm --prefix backend run smoke:e2e"
   }
 }
