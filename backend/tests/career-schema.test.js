@@ -6,8 +6,9 @@ const {
   parseSchemaSource, normalizeEol, TOP_LEVEL_KEYS, ENUMS, MACHINE_SCHEMA,
   ENUM_LOCATIONS, collectEnumPaths, findEnumMismatches, assertEnumsConsistent,
 } = require('../src/career/schema');
-const { validateGenerated, validateEnums } = require('../scripts/validate-career-schema');
-const { buildSchemaMarkdown } = require('../scripts/build-career-schema');
+const { validateGenerated, validateEnums, main: validateMain } = require('../scripts/validate-career-schema');
+const { buildSchemaMarkdown, generate, main: buildMain } = require('../scripts/build-career-schema');
+const os = require('os');
 
 const ROOT = path.join(__dirname, '..', '..');
 const SOURCE_PATH = path.join(ROOT, 'docs', 'CAREER_SCHEMA.md');
@@ -77,23 +78,56 @@ function normalizeWhitespace(text) {
 }
 
 /**
- * 从 skill 文件里取出两处 13 键键序串：
- * - 围栏 ``` 代码块里的那一行
- * - 反引号包着的那一串
+ * 从 text 里 anchor 之后，取出第一个 ``` 围栏代码块的**整段内容**。
+ *
+ * 刻意用 `[\s\S]*?` 而不是「单行」正则 —— 这样围栏里的内容**可能**含换行，
+ * 上层才能对「折行」做出真正有判别力的检查。
  */
-function extractSkillKeyOrders(skillText) {
-  const fenced = /^case → .+$/m.exec(skillText);
-  if (!fenced) throw new Error('skill 文件里找不到围栏里的键序串（应以「case → 」开头独占一行）');
-  const inline = /`(case → [^`\n]+)`/.exec(skillText);
-  if (!inline) throw new Error('skill 文件里找不到反引号包着的键序串');
-  return { fenced: fenced[0], inline: inline[1] };
+function extractFencedBlockAfter(text, anchor) {
+  const at = text.indexOf(anchor);
+  if (at < 0) throw new Error(`找不到锚点「${anchor}」`);
+  const m = /```[a-zA-Z]*\n([\s\S]*?)\n```/.exec(text.slice(at));
+  if (!m) throw new Error(`锚点「${anchor}」之后找不到 \`\`\` 代码块`);
+  return m[1];
 }
 
-/** 从契约源里取出人读的键序代码块（文档里第一个 ``` 块） */
-function extractSourceKeyOrder(sourceText) {
-  const m = /```[a-zA-Z]*\n([\s\S]*?)\n```/.exec(sourceText);
-  if (!m) throw new Error('契约源里找不到 ``` 代码块');
+/**
+ * 从 text 里 anchor 之后，取出第一个反引号包着的 `case → …` 串。
+ *
+ * 刻意用 `[^`]*`（允许换行）而不是 `[^`\n]+` —— 这样被折行的键序串
+ * 仍能被取到（内容里带 `\n`），上层才能判出「折行了」而不是「找不到」。
+ */
+function extractInlineKeyOrderAfter(text, anchor) {
+  const at = text.indexOf(anchor);
+  if (at < 0) throw new Error(`找不到锚点「${anchor}」`);
+  const m = /`(case →[^`]*)`/.exec(text.slice(at));
+  if (!m) throw new Error(`锚点「${anchor}」之后找不到反引号包着的键序串`);
   return m[1];
+}
+
+/**
+ * 从 skill 文件里取出两处 13 键键序串。
+ *
+ * 两处都**按上下文定位**，不取全文第一个：
+ * - 围栏版：「推进顺序（不可调换…）」那一节之后的 ``` 块；
+ * - 反引号版：「输出键序以 … 为准」那句里的反引号串。
+ *
+ * 将来在文件前部新增代码块或 `case → ` 说明，都不会误取。
+ */
+function extractSkillKeyOrders(skillText) {
+  const fenced = extractFencedBlockAfter(skillText, '**推进顺序（不可调换');
+  const inline = extractInlineKeyOrderAfter(skillText, '**输出键序以');
+  return { fenced, inline };
+}
+
+/**
+ * 从契约源里取出人读的键序代码块。
+ *
+ * 按上下文定位到「顶层 **13 个键**，顺序即输出顺序：」那句之后的 ``` 块，
+ * 而不是文档里的第一个 ``` 块。
+ */
+function extractSourceKeyOrder(sourceText) {
+  return extractFencedBlockAfter(sourceText, '顶层 **13 个键**，顺序即输出顺序：');
 }
 
 
@@ -240,17 +274,49 @@ describe('契约一致性守卫', () => {
     const { fenced, inline } = extractSkillKeyOrders(skillText);
     const expected = TOP_LEVEL_KEYS.join(' → ');
 
+    // 先判「不许折行」：这一条**有判别力** —— helper 取的是围栏/反引号里的
+    // **整段内容**，键序串一旦被折成两行，这里就会真的失败（而不是恒真）。
+    // 失败信息用中文键名，一眼看懂是哪一处折行了。
+    expect({
+      围栏里的键序串折行了: fenced.includes('\n'),
+      反引号里的键序串折行了: inline.includes('\n'),
+    }).toEqual({
+      围栏里的键序串折行了: false,
+      反引号里的键序串折行了: false,
+    });
+
     expect(fenced).toBe(expected);
     expect(inline).toBe(expected);
-    // 两处都必须单行，不许折行
-    expect(fenced).not.toContain('\n');
-    expect(inline).not.toContain('\n');
   });
 
   test('契约源里人读的键序代码块与契约源的键序一致（归一化空白后）', () => {
     const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8').replace(/\r\n/g, '\n');
     const block = extractSourceKeyOrder(sourceText);
     expect(normalizeWhitespace(block)).toBe(TOP_LEVEL_KEYS.join(' → '));
+  });
+
+  test('键序串的定位靠上下文，不靠「全文第一个」（前部新增代码块也不误取）', () => {
+    const skillText = fs.readFileSync(SKILL_PATH, 'utf8').replace(/\r\n/g, '\n');
+    // 在 skill 文件最前面塞一个**别的**围栏块与一行 `case → ` 说明：
+    // 旧写法（取全文第一个 `case → ` 行 / 第一个 ``` 块）会误取。
+    const polluted = [
+      '```',
+      'case → 这不是契约键序',
+      '```',
+      '',
+      '（这里将来可能是别的说明）',
+      '',
+      skillText,
+    ].join('\n');
+    const { fenced, inline } = extractSkillKeyOrders(polluted);
+    expect(fenced).toBe(TOP_LEVEL_KEYS.join(' → '));
+    expect(inline).toBe(TOP_LEVEL_KEYS.join(' → '));
+
+    // 契约源同理：在最前面塞一个 ``` 块
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8').replace(/\r\n/g, '\n');
+    const pollutedSource = ['```', '这不是契约键序', '```', '', sourceText].join('\n');
+    expect(normalizeWhitespace(extractSourceKeyOrder(pollutedSource)))
+      .toBe(TOP_LEVEL_KEYS.join(' → '));
   });
 
   test('样例 docs/CAREER_SCHEMA.sample.json 符合契约', () => {
@@ -317,5 +383,155 @@ describe('契约一致性守卫', () => {
     const errors = validateEnums(drifted);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('summary.strategy');
+  });
+});
+
+describe('生成期 fail-closed（Minor 1）', () => {
+  /** 构造一份「机读块枚举漂移、人读速查表不动」的源文本 */
+  function driftedSource() {
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8');
+    const drifted = sourceText.replace(
+      '"enum": ["主业重仓", "底盘待机", "守成缓投"]',
+      '"enum": ["重仓", "底盘待机", "守成缓投"]',
+    );
+    expect(drifted).not.toBe(sourceText);   // 确认替换真的发生了
+    return drifted;
+  }
+
+  test('枚举漂移时生成入口抛中文错误，且不写盘', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'career-schema-gen-'));
+    const target = path.join(tmpDir, 'CAREER_SCHEMA.md');
+    let caught = null;
+    try {
+      generate(driftedSource(), target);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught).toBeInstanceOf(Error);
+    // 错误信息是中文，且说清是「枚举」两处声明不一致
+    expect(caught.message).toMatch(/枚举速查表与机读契约块不一致/);
+    expect(caught.message).toMatch(/summary\.strategy/);
+    // **没有写盘** —— 这是 fail-closed 的要害
+    expect(fs.existsSync(target)).toBe(false);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('枚举一致时生成入口正常写盘，且内容与 buildSchemaMarkdown 一致', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'career-schema-gen-'));
+    const target = path.join(tmpDir, 'CAREER_SCHEMA.md');
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8');
+    const out = generate(sourceText, target);
+    expect(fs.existsSync(target)).toBe(true);
+    expect(fs.readFileSync(target, 'utf8')).toBe(out);
+    expect(out).toBe(buildSchemaMarkdown(sourceText));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('build:schema 的 CLI 入口在枚举漂移时退出码非 0，且不写盘', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'career-schema-cli-'));
+    const target = path.join(tmpDir, 'CAREER_SCHEMA.md');
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let code = null;
+    let printed = '';
+    try {
+      code = buildMain({ sourceText: driftedSource(), targetPath: target });
+      // 注意：mockRestore() 会清空 mock.calls，所以必须在恢复之前把输出取出来
+      printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(code).toBe(1);
+    expect(fs.existsSync(target)).toBe(false);
+    // CLI 打的是中文消息，不是栈追踪
+    expect(printed).toMatch(/✗ 契约生成失败：/);
+    expect(printed).toMatch(/枚举速查表与机读契约块不一致/);
+    expect(printed).not.toMatch(/\n\s+at /);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe('校验脚本的失败形态（Minor 4）', () => {
+  test('速查表格被破坏到无法解析时，脚本层输出中文消息而不是栈追踪', () => {
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8');
+    // 把「枚举速查」这一节的标题改名 —— 速查表格就再也抠不出来了
+    const broken = sourceText.replace('## 枚举速查（闭合集合，不得自造）', '## 枚举清单（闭合集合，不得自造）');
+    expect(broken).not.toBe(sourceText);   // 确认替换真的发生了
+    // 前提：底层解析确实会抛异常（否则这条测试就是恒真）
+    expect(() => parseSchemaSource(broken)).toThrow();
+
+    const generatedText = fs.readFileSync(GENERATED_PATH, 'utf8');
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let code = null;
+    let printed = '';
+    try {
+      code = validateMain({ sourceText: broken, generatedText });
+      // mockRestore() 会清空 mock.calls，所以必须在恢复之前把输出取出来
+      printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    } finally {
+      errSpy.mockRestore();
+    }
+    // 退出码仍是非 0（是失败，不漏）
+    expect(code).toBe(1);
+    // 输出是干净的中文 ✗ 消息
+    expect(printed).toMatch(/✗ 契约校验失败：/);
+    expect(printed).toMatch(/枚举速查/);
+    // 而不是一长串栈追踪
+    expect(printed).not.toMatch(/\n\s+at /);
+  });
+
+  test('契约源在模块加载期就炸时（真实 CLI 场景），入口给出中文消息而不是栈追踪', () => {
+    const realFs = jest.requireActual('fs');
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8');
+    // 把「枚举速查」这一节的标题改名 —— 速查表格就再也抠不出来了
+    const broken = sourceText.replace('## 枚举速查（闭合集合，不得自造）', '## 枚举清单（闭合集合，不得自造）');
+    expect(broken).not.toBe(sourceText);
+
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let code = null;
+    let printed = '';
+    try {
+      // 隔离模块注册表 + 打桩 fs：让 `src/career/schema.js` 在**模块加载阶段**
+      // 读到的是坏掉的契约源，从而复现真实 CLI 的失败形态 ——
+      // 顶层 require 当场抛异常，栈追踪直接甩到用户脸上。
+      jest.isolateModules(() => {
+        jest.doMock('fs', () => {
+          const mocked = Object.assign({}, realFs, {
+            readFileSync: (p, enc) => (
+              String(p) === String(SOURCE_PATH) ? broken : realFs.readFileSync(p, enc)
+            ),
+          });
+          mocked.default = mocked;
+          return mocked;
+        });
+        const fresh = require('../scripts/validate-career-schema');
+        code = fresh.main();
+        printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      });
+    } finally {
+      errSpy.mockRestore();
+      jest.dontMock('fs');
+    }
+    expect(code).toBe(1);
+    expect(printed).toMatch(/✗ 契约校验失败：/);
+    expect(printed).toMatch(/枚举速查/);
+    // 而不是一长串栈追踪
+    expect(printed).not.toMatch(/\n\s+at /);
+  });
+
+  test('契约源正常时校验脚本通过（退出码 0）', () => {
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8');
+    const generatedText = fs.readFileSync(GENERATED_PATH, 'utf8');
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let code = null;
+    try {
+      code = validateMain({ sourceText, generatedText });
+    } finally {
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+    expect(code).toBe(0);
+    expect(errSpy).not.toHaveBeenCalled();
   });
 });
