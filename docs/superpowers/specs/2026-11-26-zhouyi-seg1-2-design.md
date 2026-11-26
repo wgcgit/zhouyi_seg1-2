@@ -174,7 +174,7 @@ v2 的 `extractInterpretation()` 只取 `## Interpretation` 到下一个 `## ` �
 
 #### 5.2.1.1 `shiye-master.skill.md` 的改写（唯一一处拷贝后改动）
 
-**问题**：`输出规范` 与 `Execution` 两段写死了 **10 键**，而本项目的契约是 **13 键**（§5.2.2）。若原样注入，模型会按 10 键输出，三个新键拿不到值，契约校验必挂。
+**问题**：`输出规范`、`Interpretation`、`Execution` 三段写死了 **10 键**，而本项目的契约是 **13 键**（§5.2.2）。若原样注入，模型会按 10 键输出，三个新键拿不到值，契约校验必挂。
 
 **已核实的原文位置**：
 
@@ -182,27 +182,41 @@ v2 的 `extractInterpretation()` 只取 `## Interpretation` 到下一个 `## ` �
 |---|---|---|
 | `输出规范:15-19` | 推进顺序 `case → monthCommand → pattern → tiaoHou → xiJi → boundaries → playbooks → timeline → transition → summary` | 缺 3 个新键 |
 | `输出规范:23` | 硬性规则 2：「顺序固定，**10 个顶层键**一个不少」 | 数字错 |
+| **`Interpretation:43`** | 「**输出键序以 `docs/CAREER_SCHEMA.md` 为准**：`case → monthCommand → pattern → tiaoHou → xiJi → boundaries → playbooks → timeline → transition → summary`」 | **缺 3 个新键**（此行也会被注入 system prompt） |
 | `Execution:111-135` | 10 步，逐步点名那 10 个键 | 缺 3 个新键的落笔步骤 |
 | `Execution:135` | 产出校验：「逐条核对 `docs/CAREER_SCHEMA.md` 的 **10 个顶层键**是否齐全」 | 数字错 |
 
+> **`Interpretation:43` 是实测补上的漏项。**
+> 改写方案初稿只列了 `输出规范` 与 `Execution` 两段（5 处），漏了 `Interpretation` 段内的这一行 ——
+> 但 `prompt.js` 的多段提取器**会把 `Interpretation` 整段注入 system prompt**，
+> 模型运行期照样看得到 10 键的键序，与 13 键契约矛盾。
+> 所以实际要改的是**三段**、共 **6 处**。
+
 **改写方案（用户已定：拷贝后改写这三段）**：
 
-1. **推进顺序**（`输出规范`）改为 13 键：
+1. **推进顺序**（`输出规范:15-19`）改为 13 键：
    ```
    case → monthCommand → pattern → patternTracks → careerPhases → tiaoHou → xiJi
         → boundaries → directions → playbooks → timeline → transition → summary
    ```
-2. **硬性规则 2**：「10 个顶层键」→「13 个顶层键」。
-3. **`Execution` 插 3 步**，位置严格对应新键序：
-   - 第 4 步（原第 4 步之前）：**定格局赛道** → 填 `patternTracks`（十格局的适合赛道 + 特质；经典配格有则填 `byCombination`，无则该数组留空）
-   - 第 4 步与第 5 步之间：**定人生阶段** → 填 `careerPhases`（早年阶段特征与表现、中年后阶段特征与表现；**这是综合判断，不是规则推导**）
-   - 第 7 步（原第 7 步之前）：**定方位与行业** → 填 `directions`（按喜用五行给：核心象、代表职业、性格适配、方位参考）
-4. **产出校验**：「10 个顶层键」→「13 个」。
+2. **硬性规则 2**（`输出规范:23`）：「10 个顶层键」→「13 个顶层键」。
+3. **`Execution` 插 3 步**（`Execution:111-135`），插入点严格对应新键序（键序是唯一权威）：
+   - 原第 3 步（填 `pattern`）**之后**、原第 4 步之前：**定格局赛道** → 填 `patternTracks`
+     （十格局的适合赛道 + 特质；经典配格有则填 `byCombination`，无则该数组留空）
+   - 上一条**之后**、原第 4 步（填 `tiaoHou`）之前：**定人生阶段** → 填 `careerPhases`
+     （早年阶段特征与表现、中年后阶段特征与表现；**这是综合判断，不是规则推导**）
+   - 原第 6 步（填 `boundaries`）**之后**、原第 7 步之前：**定方位与行业** → 填 `directions`
+     （按喜用五行给：核心象、代表职业、性格适配、方位参考）
+   ⇒ 改写后的步序为：`case` → `monthCommand` → `pattern` → `patternTracks` → `careerPhases`
+   → `tiaoHou` → `xiJi` → `boundaries` → `directions` → `playbooks` → `timeline` → `transition` → `summary`，
+   与 §5.2.2 的键序、§5.2.3 的对齐表**三处必须逐字一致**。
+4. **产出校验**（`Execution:135`）：「10 个顶层键」→「13 个」。
 5. 原 10 步的编号相应顺延，总步数 10 → 13。
+6. **`Interpretation:43` 的键序串**改为与第 1 条**逐字相同**的 13 键串。
 
 **`## Boundary` 段**（`:141`，217 字符）**不取**：内容是「不重排四柱、不重算旺衰喜忌」，这类约束改由 `CAREER_PROMPT.md` 以本项目的措辞表达。
 
-**改动的可追溯性**：seg2 原仓不动；本仓留 `docs/SHIYE_MASTER_DIFF.md` 记录上述 5 处改写的前后对照与理由。
+**改动的可追溯性**：seg2 原仓不动；本仓留 `docs/SHIYE_MASTER_DIFF.md` 记录上述 **6 处**改写的前后对照与理由。
 
 **改写后的注入长度预估**：`输出规范` ~620 + `Interpretation` 2038 + `Execution` ~1400 ≈ **4058 字符**。
 
@@ -223,20 +237,22 @@ case → monthCommand → pattern → patternTracks → careerPhases → tiaoHou
 
 #### 5.2.3 逐段对齐表
 
-| txt 行 | txt 内容 | schema 键 | 说明 |
-|---|---|---|---|
-| L1-2 | 标题 + 四柱 | `case` | 原样 |
-| L4 | 「月令未月：季夏燥土，财星当令；辰为水库财库…财多身难独担」 | `monthCommand` + `pattern` | **txt 合并成一段，schema 分两键**。渲染时并成一段输出（见 §5.2.6） |
-| L5 | 「事业阶段：早年财杀混杂，多奔波、多试错、换赛道、平台辗转；中年后若大运引水印…」 | `careerPhases` | **新增键**。字段 `{ early: string, later: string }` |
-| — | （txt 无） | `patternTracks` | **新增键**，承载 `事业2.txt` 的十格局→赛道 + 七组配格行业定向 |
-| L7 | 「未月季夏，乙木枯燥，调候第一要癸水润局，次要丙火阳光…原局无丙透」 | `tiaoHou` | 原样 |
-| L9-10 | 「喜：水（印）、木（比劫）…次喜丙火…忌：叠土、叠金」 | `xiJi.{xi,ciXi,ji}` | 原样 |
-| L11 | 「不是不能碰土金赛道：…」 | `boundaries` | 原样 |
-| — | （txt 无） | `directions` | **新增键**，承载 `事业1.txt` 的五行→方位 + 代表职业 + 复合行业 |
-| L13-16 | 「早年、一般运 / 轻创业 / 重资产操盘 / 合伙」 | `playbooks` | 原样，4 档齐全 |
-| L17-20 | 「水运（亥、子）/木运（寅、卯）/火运（巳、午）/厚土、叠金运」 | `timeline[]` | **粒度差异，见下** |
-| L21 | 「交运过渡：藤萝根基未稳…」 | `transition` | 原样 |
-| — | （txt 无总纲段） | `summary` | **保留**。渲染为散文末尾的「策略总纲」段 —— 属**已知偏离基准**（散文比 txt 多一节） |
+**排序基准 = §5.2.2 的键序**（不是 txt 行号）。txt 里没有对应位置的键标「—（txt 无）」。
+
+| 序 | schema 键 | txt 行 | txt 内容 | 说明 |
+|---|---|---|---|---|
+| 1 | `case` | L1-2 | 标题 + 四柱 | 原样 |
+| 2 | `monthCommand` + `pattern` | L4 | 「月令未月：季夏燥土，财星当令；辰为水库财库…财多身难独担」 | **txt 合并成一段，schema 分两键**。渲染时并成一段输出（见 §5.2.6） |
+| 3 | `patternTracks` | —（txt 无） | — | **新增键**，承载 `事业2.txt` 的十格局→赛道 + 七组配格行业定向 |
+| 4 | `careerPhases` | L5 | 「事业阶段：早年财杀混杂，多奔波、多试错、换赛道、平台辗转；中年后若大运引水印…」 | **新增键**。字段 `{ early: string, later: string }` |
+| 5 | `tiaoHou` | L7 | 「未月季夏，乙木枯燥，调候第一要癸水润局，次要丙火阳光…原局无丙透」 | 原样 |
+| 6 | `xiJi.{xi,ciXi,ji}` | L9-10 | 「喜：水（印）、木（比劫）…次喜丙火…忌：叠土、叠金」 | 原样 |
+| 7 | `boundaries` | L11 | 「不是不能碰土金赛道：…」 | 原样 |
+| 8 | `directions` | —（txt 无） | — | **新增键**，承载 `事业1.txt` 的五行→方位 + 代表职业 + 复合行业 |
+| 9 | `playbooks` | L13-16 | 「早年、一般运 / 轻创业 / 重资产操盘 / 合伙」 | 原样，4 档齐全 |
+| 10 | `timeline[]` | L17-20 | 「水运（亥、子）/木运（寅、卯）/火运（巳、午）/厚土、叠金运」 | **粒度差异，见下** |
+| 11 | `transition` | L21 | 「交运过渡：藤萝根基未稳…」 | 原样 |
+| 12 | `summary` | —（txt 无总纲段） | — | **保留**。渲染为散文末尾的「策略总纲」段 —— 属**已知偏离基准**（散文比 txt 多一节） |
 
 **`timeline` 的粒度冲突与处置**：
 
@@ -411,9 +427,8 @@ user:
 | 测试 | 断言 |
 |---|---|
 | `career-schema.test.js` | 契约常量自洽：13 键键序、8 组枚举、必填/可空标注与 `docs/CAREER_SCHEMA.md` 一致 |
-| `career-validate.test.js` | 校验器：合法样例通过；缺键/错枚举/空必填数组/`ciXi` 空通过/`ciXi` 误设 minItems 报错；**两处 verdict 混用要报错** |
+| `career-validate.test.js` | 校验器：合法样例通过；缺键/错枚举/空必填数组/`ciXi` 空通过/`ciXi` 误设 minItems 报错；**两处 verdict 混用要报错**；**`CAREER_SCHEMA.sample.json` 自身通过契约校验**（原 `career-sample.test.js` 的覆盖并入本文件） |
 | `career-render.test.js` | 用 `CAREER_SCHEMA.sample.json` 渲染：段序与 txt 一致；每个键都有对应段落；无 JSON 键名残留；`timeline` 按五行归并正确 |
-| `career-sample.test.js` | `CAREER_SCHEMA.sample.json` 自身通过契约校验 |
 | `session.test.js` | `POST /api/session` 202 + 带回 chart；轮询 pending→ready；四柱不一致时判废 |
 | `chat.test.js` | mock LLM：上下文含推理结果与 skill 知识；回答原样返回；session 不存在时 404 |
 | `api.test.js` | 拷自 v2，改动点：`/api/paipan/schema` 仍返回 12 字段；新增接口的 404 中文 |
