@@ -5,16 +5,26 @@ const path = require('path');
 
 const SOURCE_PATH = path.join(__dirname, '..', '..', '..', 'docs', 'CAREER_SCHEMA.md');
 
+/**
+ * 统一换行符为 LF。
+ * Windows 上 git 的 core.autocrlf=true 会把入库的 LF 检出成 CRLF，
+ * 而下面的正则对行尾敏感（枚举表格按 `\n|` / `\n\n` 定位），
+ * 所以解析前必须先归一化，否则新克隆的仓库里 require 本模块就会抛错。
+ */
+function normalizeEol(text) {
+  return text.replace(/\r\n/g, '\n');
+}
+
 /** 从 markdown 里抠出 ```json 包裹的机读契约块 */
 function extractMachineSchema(text) {
-  const m = /```json\s*\n([\s\S]*?)\n```/.exec(text);
+  const m = /```json\s*\n([\s\S]*?)\n```/.exec(normalizeEol(text));
   if (!m) throw new Error('CAREER_SCHEMA.md 里找不到 ```json 机读契约块');
   return JSON.parse(m[1]);
 }
 
 /** 从人读的「枚举速查」表格里解析出闭合枚举 */
 function extractEnums(text) {
-  const table = /##\s*枚举速查[\s\S]*?\n\|[^\n]*\|\n\|[-|\s]*\|\n([\s\S]*?)\n\n/.exec(text);
+  const table = /##\s*枚举速查[\s\S]*?\n\|[^\n]*\|\n\|[-|\s]*\|\n([\s\S]*?)\n\n/.exec(normalizeEol(text));
   if (!table) throw new Error('CAREER_SCHEMA.md 里找不到「枚举速查」表格');
   const enums = [];
   for (const line of table[1].split('\n')) {
@@ -49,4 +59,4 @@ const TOP_LEVEL_KEYS = parsed.topLevelKeys;
 const ENUMS = parsed.enums;
 const MACHINE_SCHEMA = parsed.machineSchema;
 
-module.exports = { parseSchemaSource, TOP_LEVEL_KEYS, ENUMS, MACHINE_SCHEMA, SOURCE_PATH };
+module.exports = { parseSchemaSource, normalizeEol, TOP_LEVEL_KEYS, ENUMS, MACHINE_SCHEMA, SOURCE_PATH };

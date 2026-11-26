@@ -99,4 +99,24 @@ describe('事业推理契约', () => {
     expect(out).toContain('顶层 13 个键');
     for (const key of EXPECTED_KEYS) expect(out).toContain(key);
   });
+
+  test('源文件是 CRLF（Windows 检出）时照样能解析出枚举与机读块', () => {
+    // Windows 上 git 的 core.autocrlf=true 会把入库的 LF 检出成 CRLF，
+    // 契约解析的正则对行尾敏感，必须先归一化再匹配。
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8');
+    const lf = sourceText.replace(/\r\n/g, '\n');
+    const crlf = lf.replace(/\n/g, '\r\n');
+    expect(crlf).not.toBe(lf);
+    const parsed = parseSchemaSource(crlf);
+    expect(parsed.topLevelKeys).toEqual(EXPECTED_KEYS);
+    expect(parsed.enums).toHaveLength(8);
+    expect(parsed.machineSchema.type).toBe('object');
+  });
+
+  test('CRLF 的生成物与 LF 的生成物校验结果一致（不同步判定不受行尾影响）', () => {
+    const sourceText = fs.readFileSync(SOURCE_PATH, 'utf8');
+    const generatedText = fs.readFileSync(GENERATED_PATH, 'utf8');
+    const crlfGenerated = generatedText.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+    expect(validateGenerated(sourceText, crlfGenerated)).toEqual([]);
+  });
 });
