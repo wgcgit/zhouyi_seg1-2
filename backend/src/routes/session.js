@@ -50,7 +50,7 @@ router.post('/', async (req, res) => {
       qiyunMethod: req.body.qiyunMethod === 2 ? 2 : 1,
     });
   } catch (error) {
-    console.error('离线排盘失败:', error && error.message);
+    console.error('离线排盘失败:', chineseError(error && error.message, CHART_ERROR_FALLBACK));
     return res.status(400).json({
       success: false,
       errors: [chineseError(error && error.message, CHART_ERROR_FALLBACK)],
@@ -85,7 +85,7 @@ router.post('/', async (req, res) => {
       session.status = 'ready';
     })
     .catch((error) => {
-      console.error('事业推理失败:', error && error.message);
+      console.error('事业推理失败:', chineseError(error && error.message, '事业推理失败，请稍后重试'));
       session.status = 'error';
       session.error = chineseError(
         (error && error.message) || String(error),
