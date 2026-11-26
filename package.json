@@ -1,0 +1,18 @@
+{
+  "name": "zhouyi-seg1-2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "周易之易 · 事业推盘 + 事业问答 —— 整合 v2 离线排盘与 seg2 事业择业 skill",
+  "scripts": {
+    "postinstall": "npm --prefix backend install",
+    "install:all": "npm --prefix backend install",
+    "test": "npm --prefix backend test",
+    "start": "npm --prefix backend run start",
+    "build:css": "npm --prefix backend run build:css",
+    "build:schema": "npm --prefix backend run build:schema",
+    "validate:schema": "npm --prefix backend run validate:schema",
+    "gen:coords": "npm --prefix backend run gen:coords",
+    "xcheck": "npm --prefix backend run xcheck",
+    "smoke:frontend": "npm --prefix backend run smoke:frontend"
+  }
+}

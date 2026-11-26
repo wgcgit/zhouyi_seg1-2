@@ -1,0 +1,38 @@
+/*
+ * style.css —— 只放 Tailwind 覆盖不到的东西。
+ *
+ * 视觉层（配色 / 字体 / 卡片 / 表格 / 解读区）全部由本地构建的 Tailwind 承担：
+ *   - 源文件：backend/public/css/tailwind.src.css
+ *   - 产物：  backend/public/css/tailwind.css（已入库，部署无需 node_modules）
+ *
+ * 本文件**不允许**再定义与 Tailwind 同名的类，避免「谁后加载谁生效」的混乱。
+ */
+
+/* 原生下拉箭头：Tailwind 不好统一，这里用 appearance:none 之外的方案补一个指示符 */
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke-width='2' stroke='%234d453c'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1.25rem 1.25rem;
+}
+
+/* 原生日期/时间选择器的图标按钮配色（Windows / macOS 表现不一） */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.55;
+}
+input[type="date"]:hover::-webkit-calendar-picker-indicator,
+input[type="time"]:hover::-webkit-calendar-picker-indicator {
+  opacity: 0.9;
+}
+
+/* 打印时去掉导航与装饰 */
+@media print {
+  nav {
+    display: none !important;
+  }
+  body {
+    background-image: none;
+  }
+}

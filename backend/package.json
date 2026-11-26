@@ -1,0 +1,32 @@
+{
+  "name": "zhouyi-seg1-2-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "周易之易 · 事业推盘后端",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest",
+    "build:css": "tailwindcss -c ../tailwind.config.js -i public/css/tailwind.src.css -o public/css/tailwind.css --minify",
+    "build:schema": "node scripts/build-career-schema.js",
+    "validate:schema": "node scripts/validate-career-schema.js",
+    "smoke:frontend": "node scripts/frontend-smoke.js",
+    "gen:coords": "node scripts/gen-city-coords.js",
+    "xcheck": "node scripts/xcheck-derived.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "lunar-javascript": "1.7.8"
+  },
+  "devDependencies": {
+    "astrology-china-locations": "^1.1.1",
+    "chinese-global-compliant-geodata": "^1.0.0",
+    "echarts-china-cities-js": "^0.1.1",
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4",
+    "tailwindcss": "^3.4.17"
+  }
+}
