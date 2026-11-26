@@ -2,6 +2,7 @@
 
 const client = require('../llm/client');
 const { buildCareerSystemPrompt, buildCareerUserPrompt } = require('../llm/prompt');
+const { PILLAR_KEYS } = require('../core/interactions');
 const { validateCareer } = require('./validate');
 const { renderCareerProse } = require('./render');
 
@@ -77,8 +78,13 @@ async function runCareerOnce(chart, options) {
   // 模型若把四柱改写了，整份推理就是基于错误命盘生成的，必须当场判废。
   const modelPillars = data.case && data.case.pillars;
   const chartPillars = chart && chart.pillars;
-  if (modelPillars && typeof modelPillars === 'object' && chartPillars) {
-    for (const k of ['year', 'month', 'day', 'hour']) {
+  // 离线命盘缺四柱属于上游出了 bug（buildChart 的契约里 pillars 一定存在），
+  // 此时四柱比对整条防线失效，必须响亮地判废，而不是静默放行模型的任意四柱。
+  if (!chartPillars || typeof chartPillars !== 'object') {
+    return { data: null, parsed: true, defects: ['缺少离线命盘的四柱，无法核对模型输出'] };
+  }
+  if (modelPillars && typeof modelPillars === 'object') {
+    for (const k of PILLAR_KEYS) {
       if (typeof modelPillars[k] === 'string' && modelPillars[k] !== chartPillars[k]) {
         return {
           data: null,
