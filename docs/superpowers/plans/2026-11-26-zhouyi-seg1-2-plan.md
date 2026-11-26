@@ -4530,4 +4530,13 @@ Task 2 必须在 Task 6 之前完成（prompt.js 要读改写后的 master）。
     `cp` 不会自动建目录 —— 实测报 `cp: cannot create regular file
     'backend/src/llm/client.js': No such file or directory`，**整条命令退出码 1**，
     后面跟着的 `&&` 一串都不执行。
+29. **正则解析 markdown 前必须归一化行尾**（Task 3）。
+    本机 git 的 `core.autocrlf=true` 会把入库的 LF **检出成 CRLF**。
+    `schema.js` 里的枚举表格正则按 `\n|` / `\n\n` 定位，**对行尾敏感** ——
+    新克隆的仓库里 `require('../src/career/schema')` 直接抛错，
+    **契约层整体不可用**（而且只在**新克隆**时炸，本机工作树里看不出来）。
+    ⇒ 解析前先 `text.replace(/\r\n/g, '\n')`；校验器比较两侧也各自归一化。
+    **实测**：在 `/tmp` 做全新 clone 复验过。
+    > 治根要加 `.gitattributes`（`* text=auto eol=lf`），但那会改动所有文件的检出行为，
+    > 超出单任务范围 —— 收尾时统一处理。
 
