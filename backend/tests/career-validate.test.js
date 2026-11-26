@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { validateCareer, careerDefects, collectDefects } = require('../src/career/validate');
+const { validateCareer, careerDefects, collectDefects, checkValue } = require('../src/career/validate');
 const { MACHINE_SCHEMA } = require('../src/career/schema');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -19,14 +19,72 @@ function orderedBy(obj, keys) {
 }
 
 /**
- * 契约里实际用到的 type 取值集合。
+ * JSON Schema 的 `type` 取值空间是**标准有限集**（共 7 个）。
  *
- * 这是**实测**出来的：对 MACHINE_SCHEMA 递归扫描（properties + items），
- * 实际出现的 type 取值只有 object / string / array / integer 四个。
- * 拼错的 type（如 "strng"）会让校验器落进 typeMismatch 的 default 分支，
- * 变成**完全静默**的漏检，所以取值本身也要钉住。
+ * 这不是一份「校验器能力表」的复制品，而是**取值空间本身**：
+ * 契约里的 type 只能取自这 7 个值，剩下的事情（校验器到底管不管）由探测决定。
  */
-const LEGAL_SCHEMA_TYPES = ['object', 'string', 'array', 'integer'];
+const JSON_SCHEMA_TYPE_SPACE = ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'];
+
+/**
+ * 每个候选 type 对应的「**确实不满足**该 type 的坏值」——
+ * 用来探校验器对这一种 type 到底管不管。
+ */
+const BAD_VALUE_BY_TYPE = {
+  object: 'abc',      // 字符串不是 object
+  array: 'abc',       // 字符串不是 array
+  string: 123,        // 数字不是 string
+  integer: 1.5,       // 非整数不是 integer
+  number: 'abc',      // 字符串不是 number
+  boolean: 'abc',     // 字符串不是 boolean
+  null: 'abc',        // 字符串不是 null
+};
+
+/**
+ * 探测校验器**到底管不管**某个 type。
+ *
+ * 做法：造一个**不满足**该 type 的值，丢给 checkValue 看它报不报类型缺陷：
+ *   - 报了类型缺陷 → 校验器**真的在管**这个 type → 这个 type 是合法的；
+ *   - 什么都没报   → 校验器会**静默忽略**这个 type → 这个 type 不合法
+ *     （拼错的 type 落进 typeMismatch 的 default 分支，就是这种静默漏检）。
+ *
+ * @param {string} type 候选 type 取值
+ * @param {*} badValue 不满足该 type 的坏值
+ * @returns {boolean} 校验器是否在管这个 type
+ */
+function probeTypeHandled(type, badValue) {
+  const defects = [];
+  checkValue(badValue, { type }, 'f', defects);
+  // 类型缺陷的消息形如「f: 期望 string，实际 number」
+  return defects.some((d) => d.includes('期望 '));
+}
+
+/**
+ * 从「行为探测」里派生校验器真正支持的 type 集合。
+ *
+ * 关键点：**不在别处再写死一份 type 清单**。
+ * 校验器的 type 能力表写在 validate.js 的 typeMismatch 里，
+ * 那份表一改，这里自动跟着变，不会出现「守门测试放行了一个校验器根本不管的 type」。
+ *
+ * @param {(type: string, badValue: *) => boolean} probe 探测函数（可注入，便于验证它不是恒真）
+ * @returns {string[]} 校验器真正在管的 type 集合（按取值空间的顺序）
+ */
+function deriveLegalTypes(probe) {
+  return JSON_SCHEMA_TYPE_SPACE.filter((type) => probe(type, BAD_VALUE_BY_TYPE[type]));
+}
+
+/**
+ * 校验器真正在管的 type 集合 —— **探测出来的**，不是写死的。
+ *
+ * 实测结果应为 object / array / string / integer / number 五个；
+ * boolean 与 null 落进 typeMismatch 的 default 分支，会被**静默忽略**，故不合法。
+ */
+const LEGAL_SCHEMA_TYPES = deriveLegalTypes(probeTypeHandled);
+
+/**
+ * 派生集合的**期望值**（只作为断言的钉子，不是能力表本身）。
+ */
+const EXPECTED_LEGAL_TYPES = ['object', 'array', 'string', 'integer', 'number'];
 
 /**
  * 找出契约里的「字段没人检查」的缺口（**递归**版）：
@@ -480,9 +538,33 @@ describe('事业推理结果的契约校验', () => {
     expect(gap.type).toBe('strng');
   });
 
-  test('合法 type 取值集合是实测出来的：契约里实际只用到这四个', () => {
-    // 把契约里真实出现的 type 取值集合收集出来，与检测器认定的合法集合比对。
-    // 将来契约新增了别的 type，这里会红，逼着人显式决定要不要加进合法集合。
+  test('合法 type 集合是由行为探测派生出来的（不是写死的清单）', () => {
+    // 派生逻辑：拿一个不满足该 type 的坏值去探校验器 ——
+    //   报类型缺陷 → 校验器真的在管 → 合法；
+    //   什么都没报 → 校验器静默忽略 → 不合法。
+    // 实测结果：object / array / string / integer / number 五个。
+    // boolean 与 null 会落进 typeMismatch 的 default 分支，被静默忽略。
+    expect(LEGAL_SCHEMA_TYPES).toEqual(EXPECTED_LEGAL_TYPES);
+  });
+
+  test('派生不是恒真：把 number 的探测结果改坏，派生集合断言就会红', () => {
+    // 注入一个「坏的探测」：对 number 一律说不合法
+    const brokenProbe = (type, badValue) => (
+      type === 'number' ? false : probeTypeHandled(type, badValue)
+    );
+    const broken = deriveLegalTypes(brokenProbe);
+
+    // 改坏之后派生集合确实变了（少了 number）—— 说明派生真的受探测结果支配
+    expect(broken).not.toEqual(LEGAL_SCHEMA_TYPES);
+    expect(broken).not.toContain('number');
+    expect(broken).toEqual(['object', 'array', 'string', 'integer']);
+
+    // 同一条「派生集合 = 期望集合」的断言，对改坏的集合**会红**
+    expect(() => expect(broken).toEqual(EXPECTED_LEGAL_TYPES)).toThrow();
+  });
+
+  test('契约里用到的每个 type 都在派生集合里（校验器不管的 type 不许进契约）', () => {
+    // 收集契约里真实出现的 type 取值
     const used = new Set();
     const walk = (node) => {
       if (!node || typeof node !== 'object') return;
@@ -491,7 +573,25 @@ describe('事业推理结果的契约校验', () => {
       if (node.items) walk(node.items);
     };
     walk(MACHINE_SCHEMA);
+
+    // 契约当前用到的 type 就是这四个（钉住契约现状）
     expect([...used].sort()).toEqual(['array', 'integer', 'object', 'string']);
-    expect([...LEGAL_SCHEMA_TYPES].sort()).toEqual([...used].sort());
+
+    // 契约用到的每一个 type，校验器都真的在管 —— 这条才是「不许进契约的 type」的把关
+    for (const type of used) {
+      expect(LEGAL_SCHEMA_TYPES).toContain(type);
+    }
+  });
+
+  test('契约里塞一个校验器不管的 type（boolean），缺口检测器要抓出来', () => {
+    // boolean 落进 typeMismatch 的 default 分支 → 静默漏检，
+    // 所以它既不在派生集合里，也不许出现在契约里。
+    const broken = clone(MACHINE_SCHEMA);
+    broken.properties.pattern.properties.flag = { type: 'boolean' };
+    const gaps = findSchemaGaps(broken);
+    expect(gaps.map((g) => g.kind)).toContain('illegal-type');
+    const gap = gaps.find((g) => g.kind === 'illegal-type');
+    expect(gap.path).toBe('pattern.flag');
+    expect(gap.type).toBe('boolean');
   });
 });
