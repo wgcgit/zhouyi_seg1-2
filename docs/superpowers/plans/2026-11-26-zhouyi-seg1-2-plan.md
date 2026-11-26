@@ -648,6 +648,40 @@ describe('shiye-master 的三段已按 13 键契约改写', () => {
     expect(interp).toContain('契约落笔口径');
     expect(section(md, 'Boundary（边界）')).toContain('不重排四柱');
   });
+
+  // ↓↓↓ 下面这条守的是本任务最核心的不变量 ↓↓↓
+  test('两处键序串逐字相同，且都是一行（不许折行）', () => {
+    // 「输出规范」段的推进顺序（``` 代码块里）与「Interpretation」段的
+    // 「输出键序以 docs/CAREER_SCHEMA.md 为准：…」是**同一份键序串**。
+    // 两处只要有一处折行、或分隔符不一致，下次改契约就很容易只改到一处 ——
+    // 而模型运行期会把两段都注入 system prompt，于是同时看到两套键序。
+    // 所以这里不比「键名顺序」，比**整串逐字相同**。
+    const KEY_ORDER = [
+      'case', 'monthCommand', 'pattern', 'patternTracks', 'careerPhases',
+      'tiaoHou', 'xiJi', 'boundaries', 'directions', 'playbooks',
+      'timeline', 'transition', 'summary',
+    ].join(' → ');
+
+    // 第一处：「输出规范」段里 ``` 代码块中的推进顺序
+    const spec = section(md, '输出规范（固化在此文件，必须严格遵守）');
+    const specBlock = /```\n([^\n]+)\n```/.exec(spec);
+    expect(specBlock).not.toBeNull();
+    const specString = specBlock[1];
+
+    // 第二处：「Interpretation」段里反引号包着的键序串
+    const interp = section(md, 'Interpretation（核心方法论）');
+    const interpMatch = /`([^`]*case →[^`]*)`/.exec(interp);
+    expect(interpMatch).not.toBeNull();
+    const interpString = interpMatch[1];
+
+    // 两串必须逐字相同
+    expect(interpString).toBe(specString);
+    // 且都必须等于约定的 13 键串
+    expect(specString).toBe(KEY_ORDER);
+    // 且都不得折行（折行会让两处对不上）
+    expect(specString).not.toMatch(/\n/);
+    expect(interpString).not.toMatch(/\n/);
+  });
 });
 ```
 
@@ -739,7 +773,15 @@ case → monthCommand → pattern → patternTracks → careerPhases → tiaoHou
 cd backend && npx jest tests/shiye-master.test.js
 ```
 
-预期：**7 个测试全绿**（推进顺序 / 不再说 10 个 / Execution 步序 / Execution 产出校验 / 三个新键 / Interpretation 键序 / Interpretation 其余内容 + Boundary）。
+预期：**8 个测试全绿**（推进顺序 / 不再说 10 个 / Execution 步序 / Execution 产出校验 / 三个新键 / Interpretation 键序 / Interpretation 其余内容 + Boundary / **两处键序串逐字相同且不折行**）。
+
+> 最后一条守的是本任务**最核心的不变量**：前 7 条只验「13 个键名按顺序出现」，
+> 但**两处键序串的排版是否一致它们验不出来** ——
+> 一处折行一处不折行，7 条照样全绿，而模型运行期会同时看到两套键序。
+> 第 8 条用正则把两串抠出来 **`toBe` 逐字比**，并断言都不得含 `\n`。
+>
+> **已实测**：把 Interpretation 那行折行后，这条断言**确实变红**（8 passed → 1 failed），
+> 证明它真的在守，不是摆设。
 
 - [ ] **Step 8: 写 `docs/SHIYE_MASTER_DIFF.md`**
 
