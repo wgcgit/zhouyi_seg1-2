@@ -4540,3 +4540,10 @@ Task 2 必须在 Task 6 之前完成（prompt.js 要读改写后的 master）。
     > 治根要加 `.gitattributes`（`* text=auto eol=lf`），但那会改动所有文件的检出行为，
     > 超出单任务范围 —— 收尾时统一处理。
 
+30. **撤销临时改动不要用 `git checkout -- <file>`**（Task 3 复审修复时踩到）。
+    本机 `core.autocrlf=true`，`git checkout -- <file>` 会把文件**重新检出成 CRLF**，
+    于是「行尾敏感」的正则（skill 文件围栏代码块的匹配、契约源枚举表格的匹配）失效 ——
+    表现为**既有测试突然报 `Received: null`**，看着像新测试写错了，其实是行尾被改了。
+    ⇒ 撤销临时改动用 `git show HEAD:<path>` 取原文并**强制写 LF**：
+    `git show HEAD:<path> | tr -d '\r' > <path>`。
+    改完用 `git ls-files --eol <path>` 确认是 `i/lf w/lf`。
