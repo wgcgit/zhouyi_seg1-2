@@ -34,6 +34,28 @@ async function makeReadySession(app) {
   return id;
 }
 
+/**
+ * 直接往会话表里塞一个指定状态的会话。
+ *
+ * 阶段二跑挂时的会话（status='error'）没法靠 mock runCareerRounds 造出来
+ * （它只在拿到非法 JSON 时才置 error），所以这里直接写会话表，
+ * 这样 status / error 文案都是确定的，断言才钉得住。
+ */
+function putSession(app, patch) {
+  const id = 'sess_test_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  app.locals.sessions.set(id, {
+    id,
+    status: 'pending',
+    createdAt: Date.now(),
+    chart: null,
+    career: null,
+    error: null,
+    history: [],
+    ...patch,
+  });
+  return id;
+}
+
 describe('chat 问答', () => {
   let app;
 
@@ -61,6 +83,61 @@ describe('chat 问答', () => {
     expect(res.body.answer).toBe('宜向北发展，水运是黄金阶段。');
   });
 
+  test('模型返回的首尾空白会被去掉', async () => {
+    // 钉住 chat 路由里的 raw.trim()：
+    // 之前「回答原样返回」用的 mock 值没有首尾空白，把 trim() 删掉测试照样绿。
+    client.callMiniMax.mockResolvedValue('  回答内容  ');
+    const id = await makeReadySession(app);
+    const res = await request(app)
+      .post('/api/chat')
+      .send({ sessionId: id, message: '我适合做什么行业？' });
+    expect(res.status).toBe(200);
+    expect(res.body.answer).toBe('回答内容');
+  });
+
+  test('system prompt 里同时带上 JSON 段、散文段与通用方法论', async () => {
+    // 造一个「探针只出现在 JSON 里」的会话：
+    // JSON 段与散文段的内容互不相同，两条断言才不会互相蒙混过关。
+    runCareerRounds.mockResolvedValue({
+      data: { marker: '只出现在JSON里的探针' },
+      prose: '只出现在散文里的探针',
+      parsed: true,
+      defects: [],
+    });
+    const id = await makeReadySession(app);
+    const res = await request(app)
+      .post('/api/chat')
+      .send({ sessionId: id, message: '我适合做什么行业？' });
+    expect(res.status).toBe(200);
+
+    const messages = client.callMiniMax.mock.calls[0][0];
+    const system = messages.find((m) => m.role === 'system').content;
+
+    // 1) JSON 段：标题 + json 围栏 + 只在 JSON 里出现的探针
+    expect(system).toContain('## 本命事业推理结果（JSON）');
+    expect(system).toContain('```json');
+    expect(system).toContain('只出现在JSON里的探针');
+
+    // 2) 散文段：标题 + 只在散文里出现的探针
+    expect(system).toContain('## 本命事业推理结果（可读版）');
+    expect(system).toContain('只出现在散文里的探针');
+
+    // 3) 通用方法论段
+    expect(system).toContain('## 通用事业择业方法论');
+
+    // 两条断言互相独立：JSON 探针只能出现在 JSON 段，散文探针只能出现在散文段
+    const jsonIdx = system.indexOf('## 本命事业推理结果（JSON）');
+    const proseIdx = system.indexOf('## 本命事业推理结果（可读版）');
+    expect(jsonIdx).toBeGreaterThanOrEqual(0);
+    expect(proseIdx).toBeGreaterThan(jsonIdx);
+    const jsonSection = system.slice(jsonIdx, proseIdx);
+    const proseSection = system.slice(proseIdx);
+    expect(jsonSection).toContain('只出现在JSON里的探针');
+    expect(jsonSection).not.toContain('只出现在散文里的探针');
+    expect(proseSection).toContain('只出现在散文里的探针');
+    expect(proseSection).not.toContain('只出现在JSON里的探针');
+  });
+
   test('问题会写进会话历史', async () => {
     const id = await makeReadySession(app);
     await request(app).post('/api/chat').send({ sessionId: id, message: '我适合做什么行业？' });
@@ -71,6 +148,7 @@ describe('chat 问答', () => {
   test('会话不存在时返回 404', async () => {
     const res = await request(app).post('/api/chat').send({ sessionId: '不存在', message: '你好' });
     expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
     // 断言文案本身：chat 路由自己的 404 文案是「会话不存在或已过期」，
     // 而 express 全局兜底（路由压根没匹配上）的文案是「请求的接口不存在」。
     // 只断言状态码 404 分不清这两者，必须把文案也钉住。
@@ -82,6 +160,7 @@ describe('chat 问答', () => {
   test('缺少会话编号时返回 400', async () => {
     const res = await request(app).post('/api/chat').send({ message: '我适合做什么行业？' });
     expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
     expect(res.body.errors[0]).toContain('会话');
     expect(res.body.errors[0]).toMatch(/[一-龥]/);
     // 缺会话编号时不该去调模型
@@ -92,6 +171,12 @@ describe('chat 问答', () => {
     const id = await makeReadySession(app);
     const res = await request(app).post('/api/chat').send({ sessionId: id, message: '  ' });
     expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    // 钉住文案：必须是中文的「请输入问题」
+    expect(res.body.errors[0]).toContain('请输入问题');
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    // 消息为空时不该去调模型
+    expect(client.callMiniMax).not.toHaveBeenCalled();
   });
 
   test('会话还在推理中时返回 409', async () => {
@@ -102,6 +187,39 @@ describe('chat 问答', () => {
       .post('/api/chat')
       .send({ sessionId: created.body.sessionId, message: '你好' });
     expect(res.status).toBe(409);
+    // 契约：错误响应一律 { success:false, errors:[...] }
+    expect(res.body.success).toBe(false);
+    // 钉住 409 的文案：pending 会话没有 session.error，必须落到兜底文案
+    expect(res.body.errors[0]).toContain('事业推理尚未完成');
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    // 会话还没好时不该去调模型
+    expect(client.callMiniMax).not.toHaveBeenCalled();
+  });
+
+  test('阶段二失败的会话发问返回 409 且透出具体失败原因', async () => {
+    // 直接往会话表塞一个 status='error' 的会话：
+    // 阶段二失败是真实业务状态，必须也走 409 而不是掉进 500。
+    const reason = '阶段二跑挂了';
+    // 刻意给这个 error 会话塞一个半成品 career：
+    // 只有「靠 status 判断」才能挡住它 —— 如果 career 也缺失，
+    // 那 `!session.career` 这一条就会顺带挡住，测试就蒙混过关了。
+    // 这样把 `session.status !== 'ready'` 改坏成 `=== 'pending'` 时，
+    // 这条用例必然变红（status='error' 会被放行，掉进 200/500）。
+    const id = putSession(app, {
+      status: 'error',
+      error: reason,
+      career: { json: { partial: true }, prose: '半成品结果' },
+    });
+    const res = await request(app)
+      .post('/api/chat')
+      .send({ sessionId: id, message: '我适合做什么行业？' });
+    // 必须是 409，不能是 500
+    expect(res.status).toBe(409);
+    expect(res.body.success).toBe(false);
+    // 逐字等于 session.error —— 不能被兜底文案「事业推理尚未完成」盖掉
+    expect(res.body.errors[0]).toBe(reason);
+    // 会话失败时不该去调模型
+    expect(client.callMiniMax).not.toHaveBeenCalled();
   });
 
   test('模型报错时返回 500 与中文提示', async () => {
@@ -113,6 +231,7 @@ describe('chat 问答', () => {
     const id = await makeReadySession(app);
     const res = await request(app).post('/api/chat').send({ sessionId: id, message: '你好' });
     expect(res.status).toBe(500);
+    expect(res.body.success).toBe(false);
     expect(res.body.errors[0]).toMatch(/./);
     // 必须是中文提示
     expect(res.body.errors[0]).toMatch(/[一-龥]/);
@@ -126,6 +245,7 @@ describe('chat 问答', () => {
     const id = await makeReadySession(app);
     const res = await request(app).post('/api/chat').send({ sessionId: id, message: '你好' });
     expect(res.status).toBe(500);
+    expect(res.body.success).toBe(false);
     expect(res.body.errors[0]).toMatch(/[一-龥]/);
   });
 
