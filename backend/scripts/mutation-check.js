@@ -123,6 +123,10 @@ const CASES = {
         "res.status(404).json({ success: false, errors: ['会话不存在或已过期'] })",
         "res.status(500).json({ success: false, errors: ['会话不存在或已过期'] })",
       ]] },
+      { name: 'S7 追加历史响应里的 count 恒为 1', pairs: [[
+        'res.json({ success: true, count: session.history.length });',
+        'res.json({ success: true, count: 1 });',
+      ]] },
     ],
   },
   app: {
@@ -176,6 +180,22 @@ const CASES = {
       { name: 'C8 提示语为空时不返回 400', pairs: [[
         'if (!message) {',
         'if (false) {',
+      ]] },
+      { name: 'C9 409 文案固定化（丢掉 session.error 透出）', pairs: [[
+        "errors: [session.error || '事业推理尚未完成，请稍后再问'],",
+        "errors: ['事业推理尚未完成，请稍后再问'],",
+      ]] },
+      { name: 'C10 只挡 pending（error 态会话放行）', pairs: [[
+        "if (session.status !== 'ready' || !session.career) {",
+        "if (session.status === 'pending' || !session.career) {",
+      ]] },
+      { name: 'C11 prompt 的 JSON 段丢失（两次都传散文）', pairs: [[
+        'buildChatSystemPrompt(session.career.json, session.career.prose)',
+        'buildChatSystemPrompt(session.career.prose, session.career.prose)',
+      ]] },
+      { name: 'C12 prompt 的散文段丢失（两次都传 JSON）', pairs: [[
+        'buildChatSystemPrompt(session.career.json, session.career.prose)',
+        'buildChatSystemPrompt(session.career.json, session.career.json)',
       ]] },
     ],
   },

@@ -195,6 +195,21 @@ describe('会话编排', () => {
     expect(res.body.count).toBe(1);
   });
 
+  test('count 反映的是历史总条数，不是写死的 1', async () => {
+    const created = await request(app).post('/api/session').send(VALID_BODY);
+    const id = created.body.sessionId;
+    await request(app)
+      .post(`/api/session/${id}/history`)
+      .send({ role: 'user', content: '第一条' });
+    const res = await request(app)
+      .post(`/api/session/${id}/history`)
+      .send({ role: 'assistant', content: '第二条' });
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+    const history = await request(app).get(`/api/session/${id}/history`);
+    expect(history.body.history).toHaveLength(2);
+  });
+
   test('阶段二不阻塞 POST 的 202 响应', async () => {
     runCareerRounds.mockImplementation(() => new Promise(() => {}));
     // 若阶段二阻塞了响应，这里会超时并给出明确失败信息（而不是整个用例卡死）。
