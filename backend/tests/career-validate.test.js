@@ -19,36 +19,164 @@ function orderedBy(obj, keys) {
 }
 
 /**
- * 找出契约里的「字段没人检查」的缺口：
- *   1. `required` 里有、但 `properties` 里没有的键（这种键完全不会被校验）；
- *   2. `properties` 里既没声明 `type` 又没声明 `enum` 的字段（这种字段的值完全不被检查）。
+ * 契约里实际用到的 type 取值集合。
+ *
+ * 这是**实测**出来的：对 MACHINE_SCHEMA 递归扫描（properties + items），
+ * 实际出现的 type 取值只有 object / string / array / integer 四个。
+ * 拼错的 type（如 "strng"）会让校验器落进 typeMismatch 的 default 分支，
+ * 变成**完全静默**的漏检，所以取值本身也要钉住。
+ */
+const LEGAL_SCHEMA_TYPES = ['object', 'string', 'array', 'integer'];
+
+/**
+ * 找出契约里的「字段没人检查」的缺口（**递归**版）：
+ *   1. `required` 里有、但同层 `properties` 里没有的键（这种键完全不会被校验）——
+ *      每一层 object 节点都要查，不只是顶层；
+ *   2. 节点既没声明 `type` 又没声明 `enum`（这种节点的值完全不被检查）——
+ *      **`items` 节点自身也要查**（items 是空对象 = 数组元素零约束）；
+ *   3. 节点的 `type` 取值不在合法集合里（拼错的 type 会被静默放过）。
  *
  * @param {object} schema 机读契约块
  * @returns {Array<{kind: string, path: string}>} 缺口列表
  */
 function findSchemaGaps(schema) {
   const gaps = [];
-  const props = (schema && schema.properties) || {};
-  for (const key of (schema && schema.required) || []) {
-    if (!Object.prototype.hasOwnProperty.call(props, key)) {
-      gaps.push({ kind: 'required-not-in-properties', path: key });
-    }
-  }
   const walk = (node, path) => {
-    if (!node || typeof node !== 'object') return;
-    if (node.properties) {
-      for (const [key, sub] of Object.entries(node.properties)) {
-        const p = path ? `${path}.${key}` : key;
-        if (!sub || (!sub.type && !sub.enum)) {
-          gaps.push({ kind: 'no-type-no-enum', path: p });
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+
+    // 一、本层 required ⊆ 本层 properties（顶层与嵌套层一视同仁）
+    const props = (node.properties && typeof node.properties === 'object' && !Array.isArray(node.properties))
+      ? node.properties
+      : null;
+    if (Array.isArray(node.required)) {
+      for (const key of node.required) {
+        if (!props || !Object.prototype.hasOwnProperty.call(props, key)) {
+          gaps.push({ kind: 'required-not-in-properties', path: path ? `${path}.${key}` : key });
         }
-        walk(sub, p);
+      }
+    }
+
+    // 二、本节点自身（含 items 节点）必须有 type 或 enum；有 type 则取值必须合法
+    if (node.type === undefined && node.enum === undefined) {
+      gaps.push({ kind: 'no-type-no-enum', path: path || '<根>' });
+    } else if (node.type !== undefined && !LEGAL_SCHEMA_TYPES.includes(node.type)) {
+      gaps.push({ kind: 'illegal-type', path: path || '<根>', type: node.type });
+    }
+
+    // 三、递归
+    if (props) {
+      for (const [key, sub] of Object.entries(props)) {
+        walk(sub, path ? `${path}.${key}` : key);
       }
     }
     if (node.items) walk(node.items, path ? `${path}[]` : '[]');
   };
   walk(schema, '');
   return gaps;
+}
+
+/** 契约里的四个打法档位名 */
+const TIER_NAMES = ['早期', '轻创业', '重资产', '合伙'];
+
+/**
+ * 扫一遍 JS 源码，收集所有**字符串字面量**的内容。
+ *
+ * 注释里的内容**不算**字面量 —— 这正是上一版守门测试误报的原因：
+ * 「两个字面量之间的中文注释」被当成了一个字面量（同行误报）。
+ * 所以这里用一个小型扫描器把注释整段跳过，只收真正的字面量。
+ *
+ * 已知限制：本扫描器不识别正则字面量（`/.../`）。validate.js 里没有正则字面量；
+ * 若将来引入了含引号的正则字面量，需要同步扩展这个扫描器。
+ *
+ * @param {string} src JS 源码文本
+ * @returns {string[]} 字面量内容列表（模板串按字面片段拆开）
+ */
+function collectStringLiterals(src) {
+  const literals = [];
+  const n = src.length;
+  let i = 0;
+
+  /** 单引号 / 双引号字符串 */
+  function scanQuoted(quote) {
+    i++;                                       // 跳过开引号
+    let buf = '';
+    while (i < n) {
+      if (src[i] === '\\') { buf += src[i] + (src[i + 1] || ''); i += 2; continue; }
+      if (src[i] === quote) { i++; break; }
+      buf += src[i]; i++;
+    }
+    literals.push(buf);
+  }
+
+  /** 模板串（要处理 ${} 插值，插值里可能有嵌套的引号与模板串） */
+  function scanTemplate() {
+    i++;                                       // 跳过开反引号
+    let buf = '';
+    while (i < n) {
+      const c = src[i];
+      if (c === '\\') { buf += c + (src[i + 1] || ''); i += 2; continue; }
+      if (c === '`') { i++; break; }
+      if (c === '$' && src[i + 1] === '{') {
+        literals.push(buf); buf = '';
+        i += 2;
+        scanInterpolation();
+        continue;
+      }
+      buf += c; i++;
+    }
+    literals.push(buf);
+  }
+
+  /** 模板串的 ${ } 插值部分：里面是**代码**，按花括号深度找配对的 } */
+  function scanInterpolation() {
+    let depth = 1;                            // 已经进了一对 ${ }
+    while (i < n) {
+      const c = src[i];
+      if (c === '{') { depth++; i++; continue; }
+      if (c === '}') { depth--; i++; if (depth === 0) return; continue; }
+      if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
+      if (c === '/' && src[i + 1] === '*') {
+        i += 2;
+        while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+        i += 2;
+        continue;
+      }
+      if (c === "'" || c === '"') { scanQuoted(c); continue; }
+      if (c === '`') { scanTemplate(); continue; }
+      i++;
+    }
+  }
+
+  /** 普通代码区：跳过注释，遇到引号就收字面量 */
+  function scanCode() {
+    while (i < n) {
+      const c = src[i];
+      if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
+      if (c === '/' && src[i + 1] === '*') {
+        i += 2;
+        while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+        i += 2;
+        continue;
+      }
+      if (c === "'" || c === '"') { scanQuoted(c); continue; }
+      if (c === '`') { scanTemplate(); continue; }
+      i++;
+    }
+  }
+
+  scanCode();
+  return literals;
+}
+
+/**
+ * 找出源码里**以字符串字面量形式**出现的打法档位名 —— 那就是硬编码。
+ *
+ * @param {string} src JS 源码文本
+ * @returns {string[]} 被硬编码的档位名
+ */
+function findHardcodedTierNames(src) {
+  const literals = collectStringLiterals(src);
+  return TIER_NAMES.filter((name) => literals.some((lit) => lit.includes(name)));
 }
 
 describe('事业推理结果的契约校验', () => {
@@ -187,13 +315,43 @@ describe('事业推理结果的契约校验', () => {
       'utf8',
     );
     // 只要有哪个档位名出现在**字符串字面量**里，就算硬编码了
-    // （用字面量匹配而不是全文匹配，免得中文注释里提到档位名就误报）
-    // 注意：字符类里排除 `\n` —— 否则两个字符串字面量**之间**的中文注释
-    // （提到档位名）会被跨行匹配上，误判成硬编码。
-    for (const name of ['早期', '轻创业', '重资产', '合伙']) {
-      const asLiteral = new RegExp(`['"\`][^'"\`\\n]*${name}[^'"\`\\n]*['"\`]`);
-      expect(asLiteral.test(src)).toBe(false);
-    }
+    // （注释里的提及不算 —— 中文注释里写档位名是正常的）
+    expect(findHardcodedTierNames(src)).toEqual([]);
+  });
+
+  test('中文注释里提到档位名不算硬编码', () => {
+    // 整行注释、整段注释、行尾注释三种形态
+    const src = [
+      '// 早期 档位指的是刚起步',
+      'const a = 1; // 轻创业 与 重资产 与 合伙',
+      '/* 合伙 这一档用于合伙人模式 */',
+      'const b = 2; /* 早期 */',
+    ].join('\n');
+    expect(findHardcodedTierNames(src)).toEqual([]);
+  });
+
+  test('同一行内两个字面量之间的中文注释不算硬编码', () => {
+    // 上一版守门测试在同行注释上误报：注释夹在两个字面量之间，
+    // 正则把「前一个字面量的收尾引号」到「后一个字面量的起始引号」当成了一段字面量。
+    const src = "const a = 'x' /* 早期 */ + 'y';";
+    expect(findHardcodedTierNames(src)).toEqual([]);
+  });
+
+  test('真的把四档写死成字面量会被抓出来', () => {
+    const src = "const SCALES = ['早期', '轻创业', '重资产', '合伙'];";
+    expect(findHardcodedTierNames(src)).toEqual(['早期', '轻创业', '重资产', '合伙']);
+  });
+
+  test('真实 validate.js 追加中文注释仍绿、追加硬编码四档就变红', () => {
+    const src = fs.readFileSync(
+      path.join(ROOT, 'backend', 'src', 'career', 'validate.js'),
+      'utf8',
+    );
+    const withComment = src + '\n// 早期 轻创业 重资产 合伙 这四个档位只是说明，不是硬编码\n';
+    expect(findHardcodedTierNames(withComment)).toEqual([]);
+    const withHardcode = src + "\nconst HARDCODED = ['早期', '轻创业', '重资产', '合伙'];\n";
+    expect(findHardcodedTierNames(withHardcode).sort())
+      .toEqual(['早期', '轻创业', '重资产', '合伙'].sort());
   });
 
   // ---- 以下为「复审修复」要求的额外用例 ----
@@ -281,5 +439,59 @@ describe('事业推理结果的契约校验', () => {
     expect(defects.join()).toContain('期望 integer');
     expect(defects.join()).toContain('NaN');
     expect(defects.join()).not.toContain('实际 null');
+  });
+
+  // ---- 以下为「第二次复审」要求的额外用例（M-a：契约缺口的递归检测） ----
+
+  test('契约自身没有 schema 缺口（递归版检测器全量检查）', () => {
+    // 一条断言把整份契约钉住：递归走遍 properties 与 items，
+    // 每一层的 required ⊆ properties，每个节点都有 type 或 enum，type 取值合法。
+    expect(findSchemaGaps(MACHINE_SCHEMA)).toEqual([]);
+  });
+
+  test('检测器能发现「数组 items 是空对象」—— 数组元素完全不被校验', () => {
+    const broken = { type: 'object', properties: { arr: { type: 'array', items: {} } } };
+    const gaps = findSchemaGaps(broken);
+    expect(gaps.map((g) => g.kind)).toContain('no-type-no-enum');
+    // 报告里要能看出是哪个缺口（路径）
+    const gap = gaps.find((g) => g.kind === 'no-type-no-enum');
+    expect(gap.path).toBe('arr[]');
+  });
+
+  test('检测器能发现「嵌套层 required 有键而 properties 里没有」', () => {
+    const broken = {
+      type: 'object',
+      properties: {
+        o: { type: 'object', required: ['x'], properties: {} },
+      },
+    };
+    const gaps = findSchemaGaps(broken);
+    expect(gaps.map((g) => g.kind)).toContain('required-not-in-properties');
+    const gap = gaps.find((g) => g.kind === 'required-not-in-properties');
+    expect(gap.path).toBe('o.x');
+  });
+
+  test('检测器能发现「type 取值拼错」—— 校验器会静默放过', () => {
+    const broken = { type: 'object', properties: { f: { type: 'strng' } } };
+    const gaps = findSchemaGaps(broken);
+    expect(gaps.map((g) => g.kind)).toContain('illegal-type');
+    const gap = gaps.find((g) => g.kind === 'illegal-type');
+    expect(gap.path).toBe('f');
+    expect(gap.type).toBe('strng');
+  });
+
+  test('合法 type 取值集合是实测出来的：契约里实际只用到这四个', () => {
+    // 把契约里真实出现的 type 取值集合收集出来，与检测器认定的合法集合比对。
+    // 将来契约新增了别的 type，这里会红，逼着人显式决定要不要加进合法集合。
+    const used = new Set();
+    const walk = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (node.type !== undefined) used.add(node.type);
+      if (node.properties) for (const sub of Object.values(node.properties)) walk(sub);
+      if (node.items) walk(node.items);
+    };
+    walk(MACHINE_SCHEMA);
+    expect([...used].sort()).toEqual(['array', 'integer', 'object', 'string']);
+    expect([...LEGAL_SCHEMA_TYPES].sort()).toEqual([...used].sort());
   });
 });
