@@ -482,6 +482,7 @@ backend/.jobs/
 *.log
 .DS_Store
 docs/.tmp-compress/
+.superpowers/
 ```
 
 `backend/.env.example`：
