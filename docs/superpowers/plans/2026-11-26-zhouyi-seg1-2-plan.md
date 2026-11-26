@@ -839,6 +839,13 @@ git commit -m "feat(skills): 落盘 5 个事业择业 skill，并把 master 三�
 
 - [ ] **Step 1: 写 `docs/CAREER_SCHEMA.md`**
 
+先建目录（**新克隆的仓库里 `backend/prompts` 与 `backend/src/career` 不存在** ——
+git 不跟踪空目录，Task 1 建的空目录没进提交）：
+
+```bash
+mkdir -p backend/prompts backend/src/career
+```
+
 这是**唯一手写源**。人读部分 + 机读 JSON Schema 块（用 ```` ```json ```` 包裹，解析器按这个标记提取）。
 
 ````markdown
@@ -2095,8 +2102,16 @@ git commit -m "feat(career): 实现 JSON → 散文文档的渲染器"
 - [ ] **Step 1: 从 v2 拷贝 `client.js` 并删解读层部分**
 
 ```bash
+mkdir -p backend/src/llm
 cp ../zhouyi_seg1_v2/backend/src/llm/client.js backend/src/llm/client.js
 ```
+
+> **`mkdir -p backend/src/llm` 不能省。** Task 1 建了这个目录，但 **git 不跟踪空目录** ——
+> 提交里没有它，**新克隆一份仓库时该目录不存在**，`cp` 会报
+> `cp: cannot create regular file 'backend/src/llm/client.js': No such file or directory`
+> （退出码 1，后面跟着的 `&&` 一串都不执行）。
+> 同理，`backend/src/career`（Task 3/4/5）与 `backend/prompts`（Task 3）在新克隆时也不存在 ——
+> Task 3 的 Step 1/3/4 也要各自 `mkdir -p`。
 
 然后**删掉**解读层专有的部分，保留 `callMiniMax` / `parseLLMJson` / `friendlyError` / 括号容错解析（`repairBraces` / `extractSections` / `findStringEnd` / `matchBracket`）。
 
