@@ -445,14 +445,17 @@ user:
 | 7 | **上下文长度** | 阶段三每次重发「推理结果 + 4 个 skill Interpretation + 历史消息」。实测 4 个子 skill 的 Interpretation 段合计 **11618 字符**（tiaohou 2972 / geshi 2485 / suiyun 2394 / wuxing 1703），推理结果 JSON 约 1.2k 字符（`CAREER_SCHEMA.sample.json` 实测 1247）。需实测是否触顶，必要时只取 `wuxing-shiye` + `suiyun-shiye` 两段 |
 | 8 | **会话只在内存** | 进程重启即失效。与 v2 的 JOBS 表同款，本期为可接受简化 |
 | 9 | **`参考资料/` 与 skill 基线不可改** | 5 份 txt 与 16 个 v2 基线 skill 逐字不改；seg2 的 4 个子 skill 逐字不改。**唯一例外**：`shiye-master.skill.md` 的 3 段按 §5.2.1.1 改写（seg2 原仓不动，本仓留 diff 说明） |
-| 10 | **仓库尚无 remote** | 建议建 GitHub 仓 `wgcgit/zhouyi_seg1-2`（命名待定），推 GitHub 前需起本地 CONNECT 代理 |
+| 10 | **GitHub 仓** | 仓名 `zhouyi_seg1-2`，由本对话创建并推送。⚠️ 本机 `github.com:443` 直连时通时不通（DNS 给的 IP 被墙），推之前先探连通性，不通就走本地 CONNECT 代理（见 [[github-connect-proxy-workaround]]） |
 | 11 | **阶段二 prompt 体积** | 命盘 JSON 25.4k + 5 个 skill 的注入段 ~15.7k + 契约与合同 ≈ 40k+ 字符。需实测 MiniMax 的实际上下文上限；若触顶，先砍命盘 JSON 中与事业无关的段（`shensha` / `lunar` / `interactions` 的部分数组），**但 `strength` / `pattern` / `fortune` 三段必须保留**（喜忌、格局、岁运的依据全在这里） |
 
-## 10. 待用户确认的剩余事项
+## 10. 决策落定（2026-11-26）
 
-1. **契约文档的落位**：`docs/CAREER_SCHEMA.md`（人读 + 机读）与 `backend/prompts/CAREER_SCHEMA.md`（注入 prompt）**两份**，还是只保留一份、由构建脚本生成另一份？建议**单一源 + 生成**（避免 v2 那种「两份手工同步」的漂移风险）。
-2. **`patternTracks.byCombination` 可空**是否接受（不是所有命都构成经典配格）。
-3. **GitHub 仓库名**与是否立即建仓推送。
+1. **契约文档单一源 + 生成**（用户已定）：`docs/CAREER_SCHEMA.md` 是**唯一手写源**（人读 + 内嵌机读 JSON Schema 块）；`backend/prompts/CAREER_SCHEMA.md`（注入 prompt 的那份）由**构建脚本从源生成**，不手工维护。避免 v2 那种「Schema md 与 `client.js` 常量两份手工同步」的漂移风险。
+   - 生成脚本：`backend/scripts/build-career-schema.js`
+   - 校验：`scripts/validate-skills.js`（从 seg2 移植并改造）**必须断言生成物与源一致**（生成物过期 ⇒ 报红）。
+   - 校验器常量（13 键键序、8 组枚举、必填/可空标注）同样**从源解析**，不另写一份常量。
+2. **`patternTracks.byCombination` 可空**（用户已接受）：不是所有命都构成经典配格，留空是合法的。
+3. **GitHub 仓库名 `zhouyi_seg1-2`**，由本对话创建并推送。
 
 ## 11. 决策记录（2026-11-26，用户逐条拍板）
 
@@ -467,4 +470,6 @@ user:
 | 7 | 契约对齐基准：txt 作骨架 + 补齐资料 | §5.2.2、§5.2.3 |
 | 8 | 新增 4 键：`careerPhases` / `directions` / `patternTracks` / 保留 `summary` | §5.2.2、§5.2.3 |
 | 9 | `tiaoHou.secondaryDrug` 以 txt 为准（丙火） | §5.2.5 |
-| 10 | `shiye-master` 的三段：拷贝后改写（不违反 seg2 原仓） | §4、§5.2.1.1 |
+| 10 | **`shiye-master` 的三段：拷贝后改写**（不违反 seg2 原仓） | §4、§5.2.1.1 |
+| 11 | **仓库名 `zhouyi_seg1-2`** | GitHub 仓由本对话创建并推送 |
+| 12 | **契约文档单一源 + 生成** | `docs/CAREER_SCHEMA.md` 唯一手写源，注入 prompt 的那份由脚本生成；校验器常量从源解析 |
