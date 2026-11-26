@@ -64,6 +64,11 @@ describe('数组 / 对象 / 布尔值不得蒙混过关', () => {
     const res = await request(app).post('/api/paipan/chart').send({ ...VALID, month: [5] });
     expect(res.status).toBe(400);
   });
+
+  test('day 为数组时同样被拦掉', async () => {
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, day: [15] });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('姓名与省市的类型、长度限制（B-4）', () => {

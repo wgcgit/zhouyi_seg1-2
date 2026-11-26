@@ -333,6 +333,11 @@ describe('数组 / 对象 / 布尔值不得蒙混过关', () => {
     const res = await request(app).post('/api/paipan/chart').send({ ...VALID, month: [5] });
     expect(res.status).toBe(400);
   });
+
+  test('day 为数组时同样被拦掉', async () => {
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, day: [15] });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('姓名与省市的类型、长度限制（B-4）', () => {
@@ -384,7 +389,7 @@ describe('姓名与省市的类型、长度限制（B-4）', () => {
 > **改动清单**：删掉顶部 `jest.mock('../src/llm/client', …)` 与 `const { callMiniMax } = require('../src/llm/client');`
 > （`client.js` 要到 Task 6 才存在，留着就 `Cannot find module`）；
 > 删掉全部 19 条 `interpret 路由` / `paipan 与 interpret 的 errors 完全一致` 断言；
-> 保留 16 条针对 `/api/paipan` 的断言（非法日期、类型蒙混、长度限制）。
+> 保留 17 条针对 `/api/paipan` 的断言（非法日期、类型蒙混、长度限制）。
 >
 > **「两个路由校验等价性」不能就此丢掉** —— Task 8 会用 `/api/paipan` 与 `/api/session`
 > 各出一条非法输入、断言两者 `errors` 完全一致（见 Task 8 Step 1）。
@@ -393,8 +398,8 @@ describe('姓名与省市的类型、长度限制（B-4）', () => {
 > 若某条真的挂了，是实现的问题，报上来，不要改断言。
 >
 > **已实测**：按上面的文件改写后，Task 1 状态下（**没有** `backend/src/llm/`）
-> 这个测试文件 **16/16 全绿**；连同其余 9 个拷贝过来的测试文件，
-> Task 1 结束时是 **10 个测试文件 / 264 个测试全绿**。
+> 这个测试文件 **17/17 全绿**；连同其余 9 个拷贝过来的测试文件，
+> Task 1 结束时是 **10 个测试文件 / 265 个测试全绿**。
 
 - [ ] **Step 3: 写根 `package.json`**
 
@@ -512,7 +517,7 @@ npm run install:all
 npm test
 ```
 
-预期：**10 个测试文件 / 264 个测试全绿**（已实测）。
+预期：**10 个测试文件 / 265 个测试全绿**（已实测）。
 若 `api.test.js` 失败，多半是 `backend/public/index.html` 或 `app.js` 的路径断言——检查拷贝是否完整。
 若报 `Cannot find module './routes/interpret'`，回 Step 1b 把那两行摘掉。
 若 `input-validation.test.js` 报 `Cannot find module '../src/llm/client'`，说明 Step 2b 没做。
@@ -4469,8 +4474,8 @@ Task 2 必须在 Task 6 之前完成（prompt.js 要读改写后的 master）。
     「10 个测试文件全绿」不成立。
     该文件顶部还有 `jest.mock('../src/llm/client', …)`，而 `client.js` 要到 Task 6 才拷 ——
     不处理就 `Cannot find module '../src/llm/client'`，**测试文件根本加载不了**。
-    ⇒ Task 1 Step 2b 把它改写成只测 `/api/paipan` 的 16 条（**已实测 16/16 绿**，
-    Task 1 结束时 10 个文件 / 264 个测试全绿）。
+    ⇒ Task 1 Step 2b 把它改写成只测 `/api/paipan` 的 17 条（**已实测 17/17 绿**，
+    Task 1 结束时 10 个文件 / 265 个测试全绿）。
     **教训**：「逐字拷贝」之前先 grep 一遍那个测试文件里有没有已删功能的路由名。
 27. **「两个路由校验等价性」的基线要跟着换**（Task 1 / Task 8）。
     v2 的基线是 paipan vs interpret；本产品没有 interpret 路由，
