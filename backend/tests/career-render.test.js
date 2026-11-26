@@ -132,4 +132,110 @@ describe('事业推理结果渲染成散文', () => {
     expect(prose).not.toContain('：：');
     expect(prose).not.toContain('：\n');
   });
+
+  // ---- 复审 Important 1：分组结果要带 branches ----
+
+  test('分组结果带 branches，等于 BRANCHES_BY_TYPE 里该类型的值', () => {
+    const groups = groupTimelineByType([{ type: '水运', ganZhi: '癸亥' }]);
+    expect(groups[0]).toHaveProperty('branches');
+    expect(groups[0].branches).toBe(BRANCHES_BY_TYPE['水运']);
+  });
+
+  test('BRANCHES_BY_TYPE 里每一种运，分组结果都带得上对应的 branches', () => {
+    const types = Object.keys(BRANCHES_BY_TYPE);
+    expect(types).toHaveLength(5);
+    for (const type of types) {
+      const groups = groupTimelineByType([{ type, ganZhi: '干支' }]);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].branches).toBe(BRANCHES_BY_TYPE[type]);
+    }
+  });
+
+  // ---- 复审 Important 2：「相邻」语义要钉住（非相邻的同类型不能并组） ----
+
+  test('非相邻的同类型不并组：水、土、水 分成三组', () => {
+    const groups = groupTimelineByType([
+      { type: '水运', ganZhi: '癸亥' },
+      { type: '土运', ganZhi: '乙丑' },
+      { type: '水运', ganZhi: '丙寅' },
+    ]);
+    expect(groups).toHaveLength(3);
+    expect(groups[0].type).toBe('水运');
+    expect(groups[1].type).toBe('土运');
+    expect(groups[2].type).toBe('水运');
+  });
+
+  // ---- 复审 Important 3：顶层 null 与数组字段类型不对都不能抛异常 ----
+
+  test('顶层是 null / undefined / 空对象时都不抛异常', () => {
+    expect(() => renderCareerProse(null)).not.toThrow();
+    expect(typeof renderCareerProse(null)).toBe('string');
+    expect(() => renderCareerProse(undefined)).not.toThrow();
+    expect(typeof renderCareerProse(undefined)).toBe('string');
+    expect(() => renderCareerProse({})).not.toThrow();
+    expect(typeof renderCareerProse({})).toBe('string');
+  });
+
+  test('数组字段类型不对（string / number）时都不抛异常，输出里也没有 [object Object]', () => {
+    const patches = [
+      { xiJi: '水（印）' },
+      { xiJi: 42 },
+      { patternTracks: '不动产' },
+      { summary: { strategy: '底盘待机', notes: '喜水木，忌叠土叠金' } },
+      { boundaries: 5 },
+      { directions: 5 },
+      { playbooks: 5 },
+      { timeline: 5 },
+    ];
+    for (const patch of patches) {
+      const d = clone(SAMPLE);
+      Object.assign(d, patch);
+      let prose = '';
+      expect(() => { prose = renderCareerProse(d); }).not.toThrow();
+      expect(prose).not.toContain('[object Object]');
+    }
+  });
+
+  // ---- 复审测试补强：渲染内容缺失要有人管 ----
+
+  test('策略总纲的 notes 内容渲染出来了', () => {
+    const prose = renderCareerProse(clone(SAMPLE));
+    expect(prose).toContain('喜水木，忌叠土叠金');
+  });
+
+  test('大运段渲染了 mainTrack 的值，但没有 mainTrack 这个键名', () => {
+    const prose = renderCareerProse(clone(SAMPLE));
+    expect(prose).toContain('深耕专业、铺底盘');
+    expect(prose).not.toContain('mainTrack');
+  });
+
+  test('事业阶段的 early 段在 later 段之前', () => {
+    const prose = renderCareerProse(clone(SAMPLE));
+    const earlyAt = prose.indexOf('早年财杀混杂');
+    const laterAt = prose.indexOf('中年后若大运引水印');
+    expect(earlyAt).toBeGreaterThan(-1);
+    expect(laterAt).toBeGreaterThan(-1);
+    expect(earlyAt).toBeLessThan(laterAt);
+  });
+
+  test('契约里全部键名在散文里零泄漏（键名从契约源解析，不在测试里写死）', () => {
+    const { MACHINE_SCHEMA } = require('../src/career/schema');
+    const keys = [];
+    (function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (node.properties) {
+        for (const k of Object.keys(node.properties)) {
+          keys.push(k);
+          walk(node.properties[k]);
+        }
+      }
+      if (node.items) walk(node.items);
+    })(MACHINE_SCHEMA);
+    // 机读契约块里一共 72 处键名（去重后 62 个）。契约变了这条会响，属于有意的绊线。
+    expect(keys).toHaveLength(72);
+    const prose = renderCareerProse(clone(SAMPLE));
+    for (const k of keys) {
+      expect(prose).not.toContain(k);
+    }
+  });
 });
