@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>周易之易 · 八字排盘结果</title>
+<link rel="stylesheet" href="./css/tailwind.css">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body class="min-h-screen">
+<main class="mx-auto w-full max-w-6xl px-4 py-8 flex flex-col gap-stack-gap-md relative z-10">
+  <h1 class="font-headline-lg text-headline-lg text-primary">八字排盘结果</h1>
+  <!-- app.js 的 renderChart() 会 getElementById('chartSection')，缺了会抛 TypeError -->
+  <div id="chartSection">
+    <div id="pillars" class="grid grid-cols-2 md:grid-cols-4 gap-stack-gap-sm"></div>
+    <div id="derived"></div>
+    <div id="interactions"></div>
+    <div id="shensha"></div>
+    <div id="analysis"></div>
+    <div id="dayun"></div>
+    <div id="liunian"></div>
+  </div>
+  <p id="msg" class="msg"></p>
+</main>
+<script src="./js/app.js"></script>
+<script src="./js/result.js"></script>
+</body>
+</html>

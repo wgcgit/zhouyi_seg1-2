@@ -68,6 +68,7 @@ function collectForm() {
 
 function setMsg(text, isError) {
   const el = document.getElementById('msg');
+  if (!el) return;
   el.textContent = text;
   el.className = isError ? 'msg error' : 'msg';
 }
@@ -163,7 +164,7 @@ function renderAnalysis(chart) {
     table(['五行', '分数', '档位'], elRows) +
     table(['要素', '成立', '依据'], facRows) +
     table(['格局候选', '十神', '透干', '置信度', '依据'], patRows) +
-    `<p class="msg">旺衰倾向（参考）：${esc(s.tendency)} ｜ 身强身弱定论与用神按方案留空，由解读层基于候选判断。</p>`;
+    `<p class="msg">旺衰倾向（参考）：${esc(s.tendency)}</p>`;
 }
 
 function renderDayun(chart) {
@@ -200,52 +201,67 @@ function renderChart(chart) {
   renderLiunian(chart);
 }
 
-// ---- 请求 ----
-async function doChart() {
-  setMsg('排盘中…');
-  const res = await fetch('/api/paipan/chart', {
+// ---- 会话 ----
+const POLL_INTERVAL_MS = 2000;
+const MAX_POLLS = 150;          // 5 分钟（阶段二要调大模型出长文）
+let currentSessionId = null;
+
+async function submitSession() {
+  setMsg('正在推事业结果，约需 30 秒…');
+  document.getElementById('btnSubmit').disabled = true;
+  document.getElementById('btnStartChat').disabled = true;
+
+  const res = await fetch('/api/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(collectForm()),
   });
   const json = await res.json();
   if (!res.ok) {
-    setMsg((json.errors || []).join('；') || '排盘失败', true);
-    return null;
+    setMsg((json.errors && json.errors[0]) || '提交失败，请检查出生信息', true);
+    document.getElementById('btnSubmit').disabled = false;
+    return;
   }
-  setMsg('排盘完成。');
-  renderChart(json.data);
-  return json.data;
+
+  currentSessionId = json.sessionId;
+  // 命盘此刻已经算好了，先显示出来
+  renderChart(json.chart);
+  document.getElementById('chartSection').classList.remove('hidden');
+
+  await pollSession();
 }
 
-// ---- 解读渲染 ----
-const INTERPRET_SECTIONS = {
-  basicInfo: '基础信息',
-  personality: '性格心性',
-  career: '事业财运',
-  marriage: '婚姻家庭',
-  health: '身体健康',
-  dayunAnalysis: '大运解析',
-  liunianAnalysis: '流年解析',
-  family: '六亲',
-  summary: '全局总结',
-  patternReview: '格局复盘',
-};
+async function pollSession() {
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const res = await fetch(`/api/session/${currentSessionId}/status`);
+    const json = await res.json();
+    if (!res.ok) {
+      setMsg((json.errors && json.errors[0]) || '查询失败，请重试', true);
+      document.getElementById('btnSubmit').disabled = false;
+      return;
+    }
+    if (json.status === 'ready') {
+      setMsg('事业结果已就绪，可以开始聊天了');
+      document.getElementById('btnStartChat').disabled = false;
+      return;
+    }
+    if (json.status === 'error') {
+      setMsg(json.error || '事业推理失败，请重试', true);
+      document.getElementById('btnSubmit').disabled = false;
+      return;
+    }
+  }
+  setMsg('等待超时，请重试', true);
+  document.getElementById('btnSubmit').disabled = false;
+}
 
-const INTERPRET_FIELDS = {
-  gender: '性别', pillars: '四柱', dayMaster: '日主', coreKeywords: '核心关键词',
-  strength: '旺衰心性', evidence: '判断依据', traits: '优点特质', shortcomings: '短板缺陷',
-  wealthPattern: '财运格局', incomeMode: '求财模式', advice: '建议',
-  spouseStar: '配偶星', spouseTraits: '配偶特质', timing: '情缘特点',
-  weakElements: '薄弱环节', risks: '隐患',
-  direction: '排运方向', startAge: '起运岁数',
-  parents: '父母', siblings: '兄弟姐妹', children: '子女',
-  coreJudgment: '整体判断', keyAdvice: '落地建议',
-  finalPattern: '最终格局', reasoning: '定局推理', yongShen: '喜用忌避',
-  yongShenLogic: '取用逻辑', avoid: '避坑要点',
-};
+function startChat() {
+  if (!currentSessionId) return;
+  window.location.href = `./chat.html?session=${encodeURIComponent(currentSessionId)}`;
+}
 
-/** HTML 转义 —— 解读内容来自大模型，不能直接拼进 innerHTML */
+/** HTML 转义 —— 渲染的字段可能来自外部输入，不能直接拼进 innerHTML */
 function esc(v) {
   return String(v === null || v === undefined ? '' : v)
     .replace(/&/g, '&amp;')
@@ -255,115 +271,6 @@ function esc(v) {
     .replace(/'/g, '&#39;');
 }
 
-/** 把一个值压成一行可读文本（数组/对象都处理） */
-function flatten(v) {
-  if (v === null || v === undefined) return '';
-  if (Array.isArray(v)) {
-    return v.map(x => (x && typeof x === 'object'
-      ? Object.values(x).filter(y => y !== null && y !== undefined).map(esc).join(' · ')
-      : esc(x))).join('；');
-  }
-  if (typeof v === 'object') {
-    return Object.values(v).filter(y => y !== null && y !== undefined).map(esc).join(' ');
-  }
-  return esc(v);
-}
-
-/** 四柱的键名 → 展示用标签（解读页的 basicInfo.pillars 专用） */
-const PILLAR_LABELS = [
-  ['year', '年柱'], ['month', '月柱'], ['day', '日柱'], ['hour', '时柱'],
-];
-
-/** 把 LLM 返回的解读 JSON 渲染成可读的分段（不是直接 dump 原始 JSON） */
-function renderInterpret(data) {
-  if (!data || typeof data !== 'object') return '<p class="msg">解读内容为空</p>';
-  const out = [];
-  for (const [key, value] of Object.entries(data)) {
-    if (value === null || value === undefined) continue;
-    out.push(`<h3 class="font-title-md text-title-md text-primary mt-stack-gap-md">${esc(INTERPRET_SECTIONS[key] || key)}</h3>`);
-    if (typeof value !== 'object' || Array.isArray(value)) {
-      out.push(`<div class="kv"><span class="k"></span><span class="v">${flatten(value)}</span></div>`);
-      continue;
-    }
-    for (const [k, v] of Object.entries(value)) {
-      if (v === null || v === undefined) continue;
-      // 四柱单独渲染：flatten() 只取 Object.values，会把「年/月/日/时」四个键名丢掉。
-      // 只针对 basicInfo 特殊处理，不改 flatten() 的通用行为。
-      if (key === 'basicInfo' && k === 'pillars' && v && typeof v === 'object' && !Array.isArray(v)) {
-        for (const [pk, label] of PILLAR_LABELS) {
-          if (v[pk] === null || v[pk] === undefined) continue;
-          out.push(`<div class="kv"><span class="k">${esc(label)}</span><span class="v">${esc(v[pk])}</span></div>`);
-        }
-        continue;
-      }
-      const label = esc(INTERPRET_FIELDS[k] || k);
-      if (Array.isArray(v)) {
-        out.push(`<div class="kv"><span class="k">${label}</span><span class="v"></span></div>`);
-        out.push('<ul class="bullets">' +
-          v.map(x => `<li>${flatten(x)}</li>`).join('') +
-          '</ul>');
-      } else {
-        out.push(`<div class="kv"><span class="k">${label}</span><span class="v">${flatten(v)}</span></div>`);
-      }
-    }
-  }
-  return out.join('');
-}
-
-async function doInterpret() {
-  setMsg('正在提交解读任务…');
-  document.getElementById('interpretSection').classList.remove('hidden');
-  const out = document.getElementById('interpretOut');
-  out.textContent = '解读中…';
-
-  // 直接 POST /api/interpret，不先单独排一次盘：
-  // done 响应里已经带回离线命盘（服务端算好的命盘），省掉一次重复排盘。
-  const res = await fetch('/api/interpret', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(collectForm()),
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    out.textContent = '';
-    setMsg((json.errors || []).join('；') || '提交解读任务失败', true);
-    return;
-  }
-  // 202 响应里已经带回离线命盘：立刻显示，不用干等大模型
-  if (json.chart) renderChart(json.chart);
-
-  // 轮询上限：最多 60 次 / 3 分钟，避免任务永远 pending 时无限轮询
-  const MAX_POLLS = 60;
-  const MAX_WAIT_MS = 3 * 60 * 1000;
-  const startedAt = Date.now();
-  let polls = 0;
-
-  const poll = async () => {
-    polls += 1;
-    if (polls > MAX_POLLS || Date.now() - startedAt > MAX_WAIT_MS) {
-      out.textContent = '';
-      setMsg('解读等待超时，请稍后重试', true);
-      return;
-    }
-    const r = await fetch('/api/interpret/' + json.jobId);
-    const j = await r.json();
-    if (j.status === 'pending') {
-      out.textContent = `解读中…（已等待 ${j.elapsed} 秒）`;
-      setTimeout(poll, 2000);
-      return;
-    }
-    if (j.status === 'done') {
-      // 服务端在 done 响应里带回命盘，直接渲染，不再另外排一次
-      if (j.chart) renderChart(j.chart);
-      out.innerHTML = renderInterpret(j.data);
-      setMsg('解读完成。');
-      return;
-    }
-    out.textContent = '';
-    setMsg(j.error || '解读失败', true);
-  };
-  poll();
-}
 
 // ---- 换日方式开关：副标题跟随开关状态 ----
 // 开关打开 = 23:00 换日（子时归次日）；关闭（默认）= 00:00 换日（子时归当日）
@@ -376,11 +283,22 @@ function syncDayBoundaryHint() {
 
 // ---- 初始化 ----
 document.addEventListener('DOMContentLoaded', () => {
-  loadCities();
-  document.getElementById('province').addEventListener('change', fillCities);
-  document.getElementById('btnChart').addEventListener('click', doChart);
-  document.getElementById('btnInterpret').addEventListener('click', doInterpret);
+  // 输入页才有的元素：勘验页上没有，跳过绑定
+  const province = document.getElementById('province');
+  if (province) {
+    loadCities();
+    province.addEventListener('change', fillCities);
+  }
+
   const dayBoundary = document.getElementById('dayBoundary');
-  dayBoundary.addEventListener('change', syncDayBoundaryHint);
-  syncDayBoundaryHint();
+  if (dayBoundary) {
+    dayBoundary.addEventListener('change', syncDayBoundaryHint);
+    syncDayBoundaryHint();
+  }
+
+  const btnSubmit = document.getElementById('btnSubmit');
+  if (btnSubmit) btnSubmit.addEventListener('click', submitSession);
+
+  const btnStartChat = document.getElementById('btnStartChat');
+  if (btnStartChat) btnStartChat.addEventListener('click', startChat);
 });

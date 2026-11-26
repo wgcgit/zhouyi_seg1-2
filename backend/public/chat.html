@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>周易之易 · 事业问答</title>
+<link rel="stylesheet" href="./css/tailwind.css">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body class="min-h-screen">
+<main class="mx-auto w-full max-w-4xl px-4 py-8 flex flex-col gap-stack-gap-md relative z-10">
+  <header class="flex flex-wrap items-center justify-between gap-2">
+    <h1 class="font-headline-lg text-headline-lg text-primary">事业问答</h1>
+    <div class="flex gap-2">
+      <button id="btnChartResult" type="button"
+        class="rounded-full bg-surface-variant text-on-surface-variant px-4 py-2 font-label-sm hover:opacity-90">
+        八字排盘结果
+      </button>
+      <button id="btnCareerResult" type="button"
+        class="rounded-full bg-surface-variant text-on-surface-variant px-4 py-2 font-label-sm hover:opacity-90">
+        事业推理结果
+      </button>
+    </div>
+  </header>
+
+  <div id="messages" class="flex flex-col gap-unit"></div>
+
+  <form id="chat-form" class="flex gap-2" onsubmit="return false;">
+    <input id="chat-input" type="text" placeholder="问点关于事业的事，比如：我适合做什么行业？"
+      class="flex-1 rounded-2xl border border-outline bg-surface px-4 py-3 font-body-md">
+    <button id="btnSend" type="button"
+      class="rounded-full bg-primary text-on-primary px-6 py-3 font-label-sm hover:opacity-90">
+      发送
+    </button>
+  </form>
+
+  <p id="msg" class="msg"></p>
+</main>
+<script src="./js/chat.js"></script>
+</body>
+</html>

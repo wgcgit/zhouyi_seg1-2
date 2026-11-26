@@ -100,20 +100,16 @@
 
         <!-- 动作 -->
         <div class="pt-stack-gap-sm mt-stack-gap-sm border-t border-outline-variant/10 flex flex-col gap-stack-gap-sm">
-          <button id="btnChart" type="button"
-                  class="w-full bg-primary-container text-on-primary disabled:opacity-60 disabled:cursor-not-allowed py-4 rounded-xl font-title-md text-title-md font-bold shadow-md shadow-primary-container/20 flex items-center justify-center gap-2">
-            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path d="M3 3v18h18"></path><path d="m19 9-5 5-4-4-3 3"></path>
-            </svg>
-            排盘（离线计算）
-          </button>
-          <button id="btnInterpret" type="button"
-                  class="w-full bg-transparent border border-primary-container text-primary-container disabled:opacity-60 disabled:cursor-not-allowed py-4 rounded-xl font-title-md text-title-md font-bold flex items-center justify-center gap-2">
-            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-            </svg>
-            排盘 + 大模型解读
-          </button>
+        <button id="btnSubmit" type="button"
+          class="w-full sm:w-auto rounded-full bg-primary text-on-primary px-8 py-3 font-label-sm
+                 hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+          提交
+        </button>
+        <button id="btnStartChat" type="button" disabled
+          class="w-full sm:w-auto rounded-full bg-surface-variant text-on-surface-variant px-8 py-3
+                 font-label-sm opacity-60 cursor-not-allowed focus:outline-none">
+          开始聊天
+        </button>
         </div>
       </form>
       <p id="msg" class="msg"></p>
@@ -193,19 +189,6 @@
           <div id="liunian"></div>
         </div>
 
-      </div>
-    </section>
-
-    <!-- 解读结果 -->
-    <section id="interpretSection" class="hidden w-full max-w-4xl">
-      <div class="glass-card rounded-xl p-stack-gap-md md:p-stack-gap-lg">
-        <h2 class="font-title-md text-title-md text-primary flex items-center gap-2">
-          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-          </svg>
-          解读
-        </h2>
-        <div id="interpretOut" class="flex flex-col gap-unit"></div>
       </div>
     </section>
 
