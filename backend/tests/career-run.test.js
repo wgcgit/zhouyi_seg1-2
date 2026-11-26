@@ -93,4 +93,41 @@ describe('阶段二的调用与校验', () => {
     expect(fake).toHaveBeenCalled();
     expect(r.data).not.toBeNull();
   });
+
+  test('调用失败时 defects 必须是中文', async () => {
+    client.callMiniMax.mockRejectedValue(new Error('timeout of 300000ms exceeded'));
+    const r = await runCareerOnce(CHART);
+    expect(r.data).toBeNull();
+    expect(r.parsed).toBe(false);
+    expect(r.defects).toHaveLength(1);
+    expect(r.defects[0]).toMatch(/[一-龥]/); // 必须含中文
+    expect(r.defects[0]).not.toMatch(/timeout/i); // 不能有英文原文
+  });
+
+  test('命盘缺少四柱时判废并给出中文说明', async () => {
+    client.callMiniMax.mockResolvedValue('{}');
+    client.parseLLMJson.mockReturnValue(JSON.parse(JSON.stringify(SAMPLE)));
+    const r = await runCareerOnce({});
+    expect(r.data).toBeNull();
+    expect(r.defects).toHaveLength(1);
+    expect(r.defects[0]).toMatch(/[一-龥]/);
+    expect(r.defects[0]).toMatch(/四柱/);
+  });
+
+  test('命盘整体为 null 时不抛异常、返回 null', async () => {
+    client.callMiniMax.mockResolvedValue('{}');
+    client.parseLLMJson.mockReturnValue(JSON.parse(JSON.stringify(SAMPLE)));
+    const r = await runCareerOnce(null);
+    expect(r.data).toBeNull();
+    expect(r.defects).toHaveLength(1);
+    expect(r.defects[0]).toMatch(/[一-龥]/);
+  });
+});
+
+describe('四柱键名的唯一来源', () => {
+  test('四柱键名从 core/interactions 引入，不在 run.js 里写死', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'career', 'run.js'), 'utf8');
+    expect(src).toContain("require('../core/interactions')");
+    expect(src).not.toMatch(/\[\s*'year'\s*,\s*'month'\s*,\s*'day'\s*,\s*'hour'\s*\]/);
+  });
 });
