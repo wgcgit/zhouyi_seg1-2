@@ -12,6 +12,20 @@ const { MACHINE_SCHEMA, TOP_LEVEL_KEYS } = require('./schema');
  *   `timeline[0].liunianWindows[0].action: 必填字段缺失`
  * 非路径类的整体性缺陷用固定中文标识开头（`整体` / `键序`），
  * 便于调用方一眼区分「某个字段错了」与「整份结果形状不对」。
+ *
+ * **有两条缺陷不是字段路径**：`整体:` 与 `键序:`。
+ * 这两条是**整体性问题**（整份结果不是对象 / 顶层键的顺序不对），
+ * 不是「某个字段错了」—— 调用方若要按路径解析缺陷来拼修复提示，
+ * 遇到这两个前缀要单独处理，别当成字段路径去截取。
+ *
+ * **顶层严格、嵌套宽松 —— 这是有意的，不是漏检**：
+ *   - 顶层 13 个键的**顺序本身是契约的一部分**（契约里明写「顶层 13 个键一个不少，
+ *     顺序固定」），多一个顶层键就意味着输出形状不对，必须报；
+ *   - 嵌套层**不拒绝契约外的属性**：阶段二校验的对象是 LLM 输出，
+ *     LLM 常多吐一两个无害的辅助字段，严格拒绝会让整份推理被无谓地判废、白白重试三轮；
+ *   - 契约机读块未声明 `additionalProperties`，本层不检查契约外属性。
+ *     （这是控制方对「嵌套层多余属性是否该报」的裁决；改这个行为要显式决策，
+ *     测试里有对应的守门用例钉住它。）
  */
 
 /** 取一个值的类型名 */
@@ -27,9 +41,41 @@ function joinPath(path, key) {
 }
 
 /**
+ * 校验一个值的**类型**是否符合 schema.type。
+ *
+ * 单独拆出来是为了让类型检查能排在枚举检查**前面**（见 checkValue 的说明）。
+ *
+ * @param {*} value 被校验的值
+ * @param {string} [type] schema 声明的类型，没声明则不检查
+ * @returns {string|null} 不匹配时返回中文说明；匹配（或没声明类型）返回 null
+ */
+function typeMismatch(value, type) {
+  switch (type) {
+    case 'object':
+      return typeName(value) === 'object' ? null : `期望 object，实际 ${typeName(value)}`;
+    case 'array':
+      return Array.isArray(value) ? null : `期望 array，实际 ${typeName(value)}`;
+    case 'string':
+      return typeof value === 'string' ? null : `期望 string，实际 ${typeName(value)}`;
+    case 'integer':
+      if (typeof value === 'number' && Number.isInteger(value)) return null;
+      // 注意：JSON.stringify(NaN) 是 "null"，会把 NaN 说成 null，所以这里特判
+      return `期望 integer，实际 ${Number.isNaN(value) ? 'NaN' : JSON.stringify(value)}`;
+    case 'number':
+      return typeof value === 'number' ? null : `期望 number，实际 ${typeName(value)}`;
+    default:
+      return null;
+  }
+}
+
+/**
  * 递归校验一个值是否符合 schema。
  * 支持：object / array / string / integer / number / enum / required / minItems / minLength。
  * 错误以 `路径: 说明` 的形式 push 进 defects。
+ *
+ * 检查顺序：**类型 → 枚举 → 其余约束**。
+ * 类型不对时直接报类型错并返回，不再走枚举分支 ——
+ * 类型错的取值本来也不可能合法命中枚举，同一字段报两次反而啰嗦。
  *
  * @param {*} value 被校验的值
  * @param {object} schema 该值对应的 schema 片段
@@ -39,17 +85,22 @@ function joinPath(path, key) {
 function checkValue(value, schema, path, defects) {
   if (!schema || typeof schema !== 'object') return;
 
+  // 一、类型检查（排在枚举检查前面）
+  const typeError = typeMismatch(value, schema.type);
+  if (typeError) {
+    defects.push(`${path}: ${typeError}`);
+    return;
+  }
+
+  // 二、枚举检查
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
     defects.push(`${path}: 值 "${value}" 不在枚举 [${schema.enum.join(' / ')}] 内`);
     return;
   }
 
+  // 三、其余约束
   switch (schema.type) {
     case 'object': {
-      if (typeName(value) !== 'object') {
-        defects.push(`${path}: 期望 object，实际 ${typeName(value)}`);
-        return;
-      }
       for (const key of schema.required || []) {
         if (!(key in value)) defects.push(`${joinPath(path, key)}: 必填字段缺失`);
       }
@@ -59,10 +110,6 @@ function checkValue(value, schema, path, defects) {
       return;
     }
     case 'array': {
-      if (!Array.isArray(value)) {
-        defects.push(`${path}: 期望 array，实际 ${typeName(value)}`);
-        return;
-      }
       if (schema.minItems !== undefined && value.length < schema.minItems) {
         defects.push(`${path}: 至少需要 ${schema.minItems} 项，实际 ${value.length} 项`);
       }
@@ -72,24 +119,8 @@ function checkValue(value, schema, path, defects) {
       return;
     }
     case 'string': {
-      if (typeof value !== 'string') {
-        defects.push(`${path}: 期望 string，实际 ${typeName(value)}`);
-        return;
-      }
       if (schema.minLength !== undefined && value.length < schema.minLength) {
         defects.push(`${path}: 不得为空串`);
-      }
-      return;
-    }
-    case 'integer': {
-      if (typeof value !== 'number' || !Number.isInteger(value)) {
-        defects.push(`${path}: 期望 integer，实际 ${JSON.stringify(value)}`);
-      }
-      return;
-    }
-    case 'number': {
-      if (typeof value !== 'number') {
-        defects.push(`${path}: 期望 number，实际 ${typeName(value)}`);
       }
       return;
     }
@@ -162,6 +193,12 @@ function collectDefects(data, schema) {
   }
 
   // 打法档位必须齐全（档位清单从契约源派生，不在代码里写死）
+  //
+  // 「四档齐全」的语义：**`scale` 枚举的每一个取值**都必须在 `playbooks` 里出现一档。
+  // 这依赖 `scale` 是**闭合集合**（契约里如此声明）；若将来契约把 `scale` 改成开放集合，
+  // 这条检查要改。
+  //
+  // 另：契约**未禁止**同一档位出现两次，本校验器也**不禁止**（不擅自加严契约）。
   const scales = playbookScales(contract);
   if (scales.length && Array.isArray(data.playbooks)) {
     const present = new Set(data.playbooks.map((p) => p && p.scale));
