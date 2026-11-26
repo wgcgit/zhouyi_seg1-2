@@ -37,31 +37,54 @@ const SECTION_TITLES = {
 };
 
 /**
+ * 取一个数组字段，非数组一律按空数组处理。
+ *
+ * 渲染器是公开导出接口，可能被直接喂未校验的数据；
+ * 数组字段类型不对（string / number / 对象）时不能炸在这里。
+ *
+ * @param {*} value
+ * @returns {Array}
+ */
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/**
  * 把 timeline 按相邻同五行类型归组。
  *
  * 只合并**相邻**的同类型步骤：类型变了就另起一组，
  * 这样「大运」段落读下来能看出运程的转折点。
  *
  * @param {Array<{type: string}>} timeline
- * @returns {Array<{type: string, steps: Array<object>}>}
+ * @returns {Array<{type: string, steps: Array<object>, branches: string|undefined}>}
  */
 function groupTimelineByType(timeline) {
   const groups = [];
-  for (const step of timeline || []) {
+  for (const step of asArray(timeline)) {
     if (!step || typeof step !== 'object') continue;
     const last = groups[groups.length - 1];
     if (last && last.type === step.type) {
       last.steps.push(step);
     } else {
-      groups.push({ type: step.type, steps: [step] });
+      // branches 一并带出来：下游（前端/后续任务）按任务书的 Interfaces 直接取 .branches，
+      // 不该在这里再自己去查一次地支表。类型不在表里时为 undefined。
+      groups.push({ type: step.type, steps: [step], branches: BRANCHES_BY_TYPE[step.type] });
     }
   }
   return groups;
 }
 
-/** 列表拼成中文顿号句 */
+/**
+ * 列表拼成中文顿号句。
+ *
+ * 只接受数组：字段类型不对（string / number / 对象）时按空列表处理，
+ * 避免调用未校验数据时抛 TypeError。
+ *
+ * @param {*} items
+ * @returns {string}
+ */
 function joinList(items) {
-  return (items || []).join('、');
+  return Array.isArray(items) ? items.join('、') : '';
 }
 
 /**
@@ -92,6 +115,10 @@ function labeled(text, label) {
  * @returns {string} Markdown 散文
  */
 function renderCareerProse(data) {
+  // 顶层兜底：渲染器是公开导出接口，可能被直接喂未校验的数据。
+  // 子字段都有 `|| {}` 兜底，顶层也必须有，前后一致，且 null/undefined 不炸。
+  data = data || {};
+
   const out = [];
   const p = (text) => out.push(text);
 
@@ -113,11 +140,11 @@ function renderCareerProse(data) {
   // 3. 格局赛道
   const ptr = data.patternTracks || {};
   p(`## ${SECTION_TITLES.patternTracks}`);
-  for (const row of ptr.byPattern || []) {
+  for (const row of asArray(ptr.byPattern)) {
     if (!row) continue;
     p(`${row.pattern || ''}：${joinList(row.tracks)}；${row.trait || ''}${row.note ? '（' + row.note + '）' : ''}。`);
   }
-  for (const row of ptr.byCombination || []) {
+  for (const row of asArray(ptr.byCombination)) {
     if (!row) continue;
     p(`${row.name || ''}：${joinList(row.tracks)}${row.condition ? '（条件：' + row.condition + '）' : ''}。`);
   }
@@ -142,13 +169,13 @@ function renderCareerProse(data) {
   const xj = data.xiJi || {};
   p(`## ${SECTION_TITLES.xiJi}`);
   p(`喜：${joinList(xj.xi)}；`);
-  if ((xj.ciXi || []).length) p(`次喜：${joinList(xj.ciXi)}；`);
+  if (asArray(xj.ciXi).length) p(`次喜：${joinList(xj.ciXi)}；`);
   p(`忌：${joinList(xj.ji)}。`);
   p('');
 
   // 7. 边界
   p(`## ${SECTION_TITLES.boundaries}`);
-  for (const row of data.boundaries || []) {
+  for (const row of asArray(data.boundaries)) {
     if (!row) continue;
     p(`不是不能碰${row.element || ''}：${row.why || ''}；${row.condition || ''}。`);
   }
@@ -156,7 +183,7 @@ function renderCareerProse(data) {
 
   // 8. 方位与行业
   p(`## ${SECTION_TITLES.directions}`);
-  for (const row of data.directions || []) {
+  for (const row of asArray(data.directions)) {
     if (!row) continue;
     p(`${row.element || ''}（${row.direction || ''}）：${row.coreImage || ''}；`
       + `代表职业 ${joinList(row.careers)}；${row.personality || ''}${row.note ? '（' + row.note + '）' : ''}。`);
@@ -165,7 +192,7 @@ function renderCareerProse(data) {
 
   // 9. 打法
   p(`## ${SECTION_TITLES.playbooks}`);
-  for (const row of data.playbooks || []) {
+  for (const row of asArray(data.playbooks)) {
     if (!row) continue;
     p(`${row.scale || ''}：${row.condition || ''}；${joinList(row.actions)}。`);
   }
@@ -181,7 +208,7 @@ function renderCareerProse(data) {
       .join('；');
     p(`${head}：${stepText}。`);
     for (const s of group.steps) {
-      for (const w of s.liunianWindows || []) {
+      for (const w of asArray(s.liunianWindows)) {
         if (!w) continue;
         p(`  - ${w.year}年 ${w.signal || ''}（${w.action || ''}）`);
       }
