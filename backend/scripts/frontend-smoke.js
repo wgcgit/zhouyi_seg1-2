@@ -105,7 +105,7 @@ function createDocument() {
 }
 
 // ---- 在 vm 里跑 app.js ----
-function loadApp(fetchImpl) {
+function loadApp(fetchImpl, extras) {
   const source = fs.readFileSync(APP_JS, 'utf8');
   const document = createDocument();
   const sandbox = {
@@ -117,6 +117,7 @@ function loadApp(fetchImpl) {
     clearTimeout() {},
     setInterval() { return 0; },
     clearInterval() {},
+    location: { href: '' },
     Date,
     Math,
     JSON,
@@ -132,11 +133,23 @@ function loadApp(fetchImpl) {
     parseInt,
     parseFloat,
   };
+  Object.assign(sandbox, extras || {});
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'app.js' });
   return { sandbox, document };
+}
+
+// 造一个 sessionStorage 桩（app.js 用 window.sessionStorage）
+function makeSessionStorage(initial) {
+  const map = new Map(Object.entries(initial || {}));
+  return {
+    getItem(k) { return map.has(k) ? map.get(k) : null; },
+    setItem(k, v) { map.set(k, String(v)); },
+    removeItem(k) { map.delete(k); },
+    _dump() { return Object.fromEntries(map); },
+  };
 }
 
 // ---- 真实命盘（用仓库自己的离线排盘引擎算，不打网络） ----
@@ -184,6 +197,47 @@ function renderChartHtml(app, chart) {
   app.sandbox.renderChart(chart);
   const doc = app.document;
   return RENDER_TARGETS.map(id => doc.getElementById(id).innerHTML).join('\n');
+}
+
+// ---- 在 vm 里跑带 IIFE 的页面脚本（chat.js / result.js） ----
+// chat.js / result.js 整体包在 IIFE 里，外部拿不到内部函数，
+// 所以它们在 IIFE 内部挂了测试钩子（window.__chatTest / window.__resultTest）。
+// 这里真的把源码跑起来，调用渲染函数，检查大模型来的内容有没有被转义。
+function loadPageScript(file, extras) {
+  const source = fs.readFileSync(file, 'utf8');
+  const document = createDocument();
+  const sandbox = {
+    document,
+    console,
+    fetch: function () { throw new Error('smoke: 不允许真实网络请求'); },
+    setTimeout() { return 0; },
+    clearTimeout() {},
+    setInterval() { return 0; },
+    clearInterval() {},
+    // URLSearchParams 是 Web API，vm 的沙箱里没有，得显式塞进去
+    URLSearchParams,
+    location: { search: '' },
+    Date,
+    Math,
+    JSON,
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    RegExp,
+    Promise,
+    Error,
+    isNaN,
+    parseInt,
+    parseFloat,
+  };
+  Object.assign(sandbox, extras || {});
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox, { filename: path.basename(file) });
+  return { sandbox, document };
 }
 
 // ======================= 断言开始 =======================
@@ -281,6 +335,68 @@ check(!pillarHtml.includes('undefined'),
   '命盘桩缺字段，渲染结果里出现了 "undefined"');
 console.log('  ✓ XSS 载荷全部被转义');
 
+section('3b. 大模型内容渲染路径（真正执行 chat.js / result.js）');
+
+// 复审发现：冒烟脚本原来只把 chat.js / result.js 当「类名来源」扫文本，
+// 从不在 vm 里执行它们 ⇒ 有人把 `${esc(content)}` 改成 `${content}`，
+// 冒烟依然全绿，而线上聊天页立刻变成存储型 XSS。
+// 这里真的把源码跑起来，调用渲染函数，断言大模型来的内容被转义。
+{
+  // ---- chat.js ----
+  const chatPage = loadPageScript(CHAT_JS, {
+    fetch: async () => ({ ok: false, json: async () => ({ errors: ['冒烟桩：不该发请求'] }) }),
+  });
+  const chatTest = chatPage.sandbox.window.__chatTest;
+  check(chatTest && typeof chatTest.appendMessage === 'function' && typeof chatTest.esc === 'function',
+    'chat.js 必须在 IIFE 内部挂出 window.__chatTest = { appendMessage, esc }（测试钩子）');
+
+  if (chatTest) {
+    const messages = chatPage.document.getElementById('messages');
+    chatTest.appendMessage('assistant', '<script>alert(1)</script>');
+    const chatHtml = messages.children.map(c => c.innerHTML).join('\n');
+    check(!chatHtml.includes('<script'),
+      '聊天页渲染结果里出现了未转义的 "<script"（聊天内容来自大模型，这是存储型 XSS）');
+    check(chatHtml.includes('&lt;script'),
+      '聊天页渲染结果里没有看到 "<script" 的转义形式 &lt;script');
+
+    chatTest.appendMessage('user', '"><img src=x onerror=alert(1)>');
+    const chatHtml2 = messages.children.map(c => c.innerHTML).join('\n');
+    check(!chatHtml2.includes('<img'),
+      '聊天页渲染结果里出现了未转义的 "<img"');
+    check(!/<[a-zA-Z][^>]*\bonerror=/.test(chatHtml2),
+      '聊天页渲染结果里出现了未转义的 onerror= 属性');
+
+    // M-1：服务端 content 为 null/undefined 时不能显示字面量 "undefined"
+    check(chatTest.esc(null) === '', 'chat.js 的 esc(null) 必须返回空串，不能是 "null"');
+    check(chatTest.esc(undefined) === '', 'chat.js 的 esc(undefined) 必须返回空串，不能是 "undefined"');
+    check(!chatTest.esc(null).includes('undefined') && !chatTest.esc(undefined).includes('undefined'),
+      'chat.js 的 esc() 对 null/undefined 兜底后仍出现了 "undefined"');
+  }
+
+  // ---- result.js ----
+  const resultPage = loadPageScript(RESULT_JS, {
+    fetch: async () => ({ ok: false, json: async () => ({ errors: ['冒烟桩：不该发请求'] }) }),
+  });
+  const resultTest = resultPage.sandbox.window.__resultTest;
+  check(resultTest && typeof resultTest.esc === 'function' && typeof resultTest.renderCareer === 'function',
+    'result.js 必须在 IIFE 内部挂出 window.__resultTest = { esc, renderCareer }（测试钩子）');
+
+  if (resultTest) {
+    const careerOut = resultPage.document.getElementById('careerOut');
+    resultTest.renderCareer({
+      json: { note: '<script>alert(1)</script>' },
+      prose: '<script>alert(1)</script>',
+    });
+    const careerHtml = careerOut.innerHTML;
+    check(!careerHtml.includes('<script'),
+      '事业页渲染结果里出现了未转义的 "<script"（散文来自大模型，这是存储型 XSS）');
+    check(careerHtml.includes('&lt;script'),
+      '事业页渲染结果里没有看到 "<script" 的转义形式 &lt;script');
+    check(resultTest.esc(null) === '', 'result.js 的 esc(null) 必须返回空串，不能是 "null"');
+    check(resultTest.esc(undefined) === '', 'result.js 的 esc(undefined) 必须返回空串，不能是 "undefined"');
+  }
+}
+
 section('4. esc() 转义引号');
 
 const quoted = app.sandbox.esc('a"b\'c&d<e>f');
@@ -307,19 +423,45 @@ while ((m = selectorRe.exec(cssRaw)) !== null) {
 }
 
 // 从四个页面 + 三个前端脚本里抽出用到的类名
+// 三种写法都要认：
+//   class="..."      —— HTML 属性
+//   className = ...   —— JS 属性赋值（app.js / chat.js / result.js 的 setMsg）
+//   classList.add(...) —— JS classList 形式（app.js 的 hidden 开关）
 function extractUsedClasses(source) {
   const used = new Set();
-  const re = /class="([^"]*)"/g;
-  let mm;
-  while ((mm = re.exec(source)) !== null) {
-    for (const token of mm[1].split(/\s+/)) {
+  const addTokens = (text) => {
+    for (const token of String(text).split(/\s+/)) {
       const t = token.trim();
       if (!t) continue;
       // 跳过模板里的动态片段
       if (/[${}`]/.test(t)) continue;
       used.add(t);
     }
-  }
+  };
+  // 从一段 JS 表达式里抠出所有字符串字面量（'...' / "..."）
+  const addLiterals = (frag) => {
+    // 先去掉比较表达式里的字面量（role === 'user' 里的 'user' 不是类名）
+    const cleaned = String(frag).replace(/[=!]==?\s*('[^']*'|"[^"]*")/g, '');
+    const lit = /'([^']*)'|"([^"]*)"/g;
+    let lm;
+    while ((lm = lit.exec(cleaned)) !== null) {
+      addTokens(lm[1] !== undefined ? lm[1] : lm[2]);
+    }
+  };
+
+  // 形式一：class="..."
+  let mm;
+  const attrRe = /class="([^"]*)"/g;
+  while ((mm = attrRe.exec(source)) !== null) addTokens(mm[1]);
+
+  // 形式二：className = <表达式>;  （表达式里可能有三元的多个字面量）
+  const nameRe = /className\s*=\s*([^;]+);/g;
+  while ((mm = nameRe.exec(source)) !== null) addLiterals(mm[1]);
+
+  // 形式三：classList.add('x') / remove('x') / toggle('x')
+  const listRe = /classList\.(?:add|remove|toggle)\(([^)]*)\)/g;
+  while ((mm = listRe.exec(source)) !== null) addLiterals(mm[1]);
+
   return used;
 }
 
@@ -377,7 +519,105 @@ function checkDefaults() {
   });
 }
 
-checkDefaults().then(() => {
+// ---- 会话持久化 / 提交失败清理旧命盘 ----
+function checkSessionBehavior() {
+  section('4c. 会话 id 持久化（sessionStorage）与提交失败清理旧命盘');
+
+  const okRes = (body) => ({ ok: true, status: 200, json: async () => body });
+
+  // 场景 1：sessionStorage 里有旧会话，/status 返回 ready
+  //   → 【开始聊天】解禁，startChat 能跳回同一个会话
+  const s1 = makeSessionStorage({ sessionId: 'sess-ready' });
+  const app1 = loadApp(
+    async () => okRes({ success: true, sessionId: 'sess-ready', status: 'ready' }),
+    { sessionStorage: s1 },
+  );
+
+  return app1.sandbox.restoreSession().then(() => {
+    const btn1 = app1.document.getElementById('btnStartChat');
+    check(btn1.disabled === false,
+      'sessionStorage 里有已就绪的会话时，【开始聊天】按钮必须解禁');
+    app1.sandbox.startChat();
+    check(app1.sandbox.location.href === './chat.html?session=sess-ready',
+      `startChat 必须跳回同一个会话，实际是 "${app1.sandbox.location.href}"`);
+    check(s1.getItem('sessionId') === 'sess-ready',
+      '已就绪的会话不该被从 sessionStorage 里清掉');
+
+    // 场景 2：sessionStorage 里有旧会话，/status 返回 error
+    //   → 清掉 sessionStorage 里的 id，【开始聊天】保持禁用
+    const s2 = makeSessionStorage({ sessionId: 'sess-err' });
+    const app2 = loadApp(
+      async () => okRes({ success: true, sessionId: 'sess-err', status: 'error', error: '炸了' }),
+      { sessionStorage: s2 },
+    );
+    return app2.sandbox.restoreSession().then(() => {
+      const btn2 = app2.document.getElementById('btnStartChat');
+      check(btn2.disabled !== false,
+        '会话状态为 error 时，【开始聊天】按钮必须保持禁用');
+      check(s2.getItem('sessionId') === null,
+        '会话状态为 error 时，必须清掉 sessionStorage 里的会话 id');
+
+      // 场景 3：sessionStorage 里的会话已过期（404）
+      //   → 清掉 id，按钮保持禁用
+      const s3 = makeSessionStorage({ sessionId: 'sess-gone' });
+      const app3 = loadApp(
+        async () => ({ ok: false, status: 404, json: async () => ({ success: false, errors: ['会话不存在或已过期'] }) }),
+        { sessionStorage: s3 },
+      );
+      return app3.sandbox.restoreSession().then(() => {
+        const btn3 = app3.document.getElementById('btnStartChat');
+        check(btn3.disabled !== false,
+          '会话 404 时，【开始聊天】按钮必须保持禁用');
+        check(s3.getItem('sessionId') === null,
+          '会话 404 时，必须清掉 sessionStorage 里的会话 id');
+
+        // 场景 4：sessionStorage 读不到（file:// 等环境会抛异常）
+        //   → 当作没有旧会话，不能抛错
+        const boom = {
+          getItem() { throw new Error('SecurityError: sessionStorage 不可用'); },
+          setItem() { throw new Error('SecurityError: sessionStorage 不可用'); },
+          removeItem() { throw new Error('SecurityError: sessionStorage 不可用'); },
+        };
+        const app4 = loadApp(async () => okRes({ status: 'ready' }), { sessionStorage: boom });
+        return app4.sandbox.restoreSession().then(() => {
+          const btn4 = app4.document.getElementById('btnStartChat');
+          check(btn4.disabled !== false,
+            'sessionStorage 不可用时，【开始聊天】按钮必须保持禁用');
+          check(app4.document.getElementById('msg').textContent === '',
+            'sessionStorage 不可用且没有旧会话时，不该显示任何提示文案');
+
+          // 场景 5：提交失败 → 上一张命盘必须被隐藏
+          const s5 = makeSessionStorage({});
+          const app5 = loadApp(
+            async () => ({ ok: false, status: 400, json: async () => ({ success: false, errors: ['提交失败，请检查出生信息'] }) }),
+            { sessionStorage: s5 },
+          );
+          const chartSection5 = app5.document.getElementById('chartSection');
+          // 先模拟「上一张命盘已经渲染出来」
+          chartSection5.classList.remove('hidden');
+          return app5.sandbox.submitSession().then(() => {
+            check(chartSection5.classList.contains('hidden'),
+              '提交失败后，页面上不能残留上一张命盘（#chartSection 必须带 hidden）');
+
+            // 场景 6：提交成功 → 记住会话 id
+            const chart = buildChart(SAMPLE_CHARTS[0].input);
+            const s6 = makeSessionStorage({});
+            const app6 = loadApp(
+              async () => okRes({ success: true, sessionId: 'sess-new', status: 'pending', chart }),
+              { sessionStorage: s6, setTimeout(fn) { fn(); return 0; } },
+            );
+            return app6.sandbox.submitSession().then(() => {
+              check(s6.getItem('sessionId') === 'sess-new',
+                `提交成功后必须把会话 id 写进 sessionStorage，实际是 ${s6.getItem('sessionId')}`);
+            });
+          });
+        });
+      });
+    });
+  });
+}
+
+checkDefaults().then(checkSessionBehavior).then(() => {
   section('结果');
   console.log(`断言总数 ${checks}，失败 ${failures.length}`);
   if (failures.length) {

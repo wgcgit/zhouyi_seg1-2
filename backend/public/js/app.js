@@ -206,10 +206,53 @@ const POLL_INTERVAL_MS = 2000;
 const MAX_POLLS = 150;          // 5 分钟（阶段二要调大模型出长文）
 let currentSessionId = null;
 
+// 会话 id 存 sessionStorage（不是 localStorage）—— 关掉标签页就该失效，
+// 但页面后退/刷新时还能回到同一会话，不用再调一次大模型。
+const SESSION_STORAGE_KEY = 'sessionId';
+
+/**
+ * 读上次留下的会话 id。
+ * sessionStorage 在某些环境（例如 file:// 直接打开页面）访问会抛异常，
+ * 读不到就当没有旧会话，不影响主流程。
+ */
+function readStoredSessionId() {
+  try {
+    return window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 记住会话 id；存不进去（比如隐私模式）也不该影响主流程 */
+function writeStoredSessionId(id) {
+  try {
+    window.sessionStorage.setItem(SESSION_STORAGE_KEY, id);
+  } catch (e) {
+    // 忽略：会话仍在本次页面生命周期内可用
+  }
+}
+
+/** 会话已废（error / 404）时清掉，免得下次刷新还去查一个死会话 */
+function clearStoredSessionId() {
+  try {
+    window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch (e) {
+    // 忽略
+  }
+}
+
+/** 隐藏上一张命盘 —— 提交失败时不能让用户把旧命盘误认成本次结果 */
+function hideChart() {
+  const sec = document.getElementById('chartSection');
+  if (sec) sec.classList.add('hidden');
+}
+
 async function submitSession() {
   setMsg('正在推事业结果，约需 30 秒…');
   document.getElementById('btnSubmit').disabled = true;
   document.getElementById('btnStartChat').disabled = true;
+  // 请求发出前先把上一张命盘收起来：失败了页面上不会残留上一张命盘
+  hideChart();
 
   const res = await fetch('/api/session', {
     method: 'POST',
@@ -220,10 +263,13 @@ async function submitSession() {
   if (!res.ok) {
     setMsg((json.errors && json.errors[0]) || '提交失败，请检查出生信息', true);
     document.getElementById('btnSubmit').disabled = false;
+    hideChart();
     return;
   }
 
   currentSessionId = json.sessionId;
+  // 记住会话 id —— 后退/刷新回到输入页时还能找回这个会话
+  writeStoredSessionId(currentSessionId);
   // 命盘此刻已经算好了，先显示出来
   renderChart(json.chart);
   document.getElementById('chartSection').classList.remove('hidden');
@@ -237,6 +283,8 @@ async function pollSession() {
     const res = await fetch(`/api/session/${currentSessionId}/status`);
     const json = await res.json();
     if (!res.ok) {
+      // /status 只在会话不存在（404）时失败 —— 会话没了，清掉记着的 id
+      clearStoredSessionId();
       setMsg((json.errors && json.errors[0]) || '查询失败，请重试', true);
       document.getElementById('btnSubmit').disabled = false;
       return;
@@ -247,6 +295,8 @@ async function pollSession() {
       return;
     }
     if (json.status === 'error') {
+      // 会话已废：清掉记着的 id，重试要用新会话
+      clearStoredSessionId();
       setMsg(json.error || '事业推理失败，请重试', true);
       document.getElementById('btnSubmit').disabled = false;
       return;
@@ -254,6 +304,56 @@ async function pollSession() {
   }
   setMsg('等待超时，请重试', true);
   document.getElementById('btnSubmit').disabled = false;
+}
+
+/**
+ * 页面初始化时回填上次留下的会话。
+ * 读到了 id 就问一次 /status，按返回的 status 决定【开始聊天】按钮：
+ *   ready  → 解禁（可以直接回到同一个聊天页）
+ *   pending→ 恢复轮询
+ *   error  → 清掉 id（会话已废，重试要用新会话），按钮保持禁用
+ *   404    → 同上
+ * 不会因此自动重新提交。
+ */
+async function restoreSession() {
+  const stored = readStoredSessionId();
+  if (!stored) return;
+  currentSessionId = stored;
+
+  let res;
+  let json;
+  try {
+    res = await fetch(`/api/session/${encodeURIComponent(stored)}/status`);
+    json = await res.json();
+  } catch (e) {
+    // 网络异常：查不到就当没有旧会话
+    clearStoredSessionId();
+    currentSessionId = null;
+    return;
+  }
+
+  if (!res.ok) {
+    // 404：会话不存在或已过期 —— 清掉，按钮保持禁用
+    clearStoredSessionId();
+    currentSessionId = null;
+    setMsg('上次的会话已失效，请重新提交', true);
+    document.getElementById('btnSubmit').disabled = false;
+    return;
+  }
+  if (json.status === 'ready') {
+    setMsg('上次的会话已就绪，可以直接开始聊天');
+    document.getElementById('btnStartChat').disabled = false;
+    return;
+  }
+  if (json.status === 'error') {
+    clearStoredSessionId();
+    currentSessionId = null;
+    setMsg(json.error || '上次的会话推理失败，请重新提交', true);
+    document.getElementById('btnSubmit').disabled = false;
+    return;
+  }
+  // pending：恢复轮询，等它跑完
+  await pollSession();
 }
 
 function startChat() {
@@ -300,5 +400,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnSubmit) btnSubmit.addEventListener('click', submitSession);
 
   const btnStartChat = document.getElementById('btnStartChat');
-  if (btnStartChat) btnStartChat.addEventListener('click', startChat);
+  if (btnStartChat) {
+    btnStartChat.addEventListener('click', startChat);
+    // 输入页才有【开始聊天】按钮 —— 在这里回填上次留下的会话
+    restoreSession();
+  }
 });

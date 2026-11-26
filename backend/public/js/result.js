@@ -31,7 +31,8 @@
   }
 
   function esc(v) {
-    return String(v)
+    // 服务端 prose 可能是 null/undefined，兜底成空串，别显示字面量 "undefined"
+    return String(v === null || v === undefined ? '' : v)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
@@ -67,6 +68,22 @@
     renderChart(json.chart);
   }
 
+  /**
+   * 渲染事业结果（结构化 JSON + 散文）。
+   * 散文是大模型生成的，必须走 esc() 转义后才能拼进 innerHTML。
+   */
+  function renderCareer(career) {
+    const out = document.getElementById('careerOut');
+    if (!out) return;
+    out.innerHTML =
+      `<details class="glass-card rounded-2xl p-4 mb-4">`
+      + `<summary class="font-label-sm text-label-sm text-primary cursor-pointer">结构化 JSON</summary>`
+      + `<pre class="mt-3 overflow-x-auto text-xs">${esc(JSON.stringify(career.json, null, 2))}</pre>`
+      + `</details>`
+      // 散文是带换行的纯文本，用 whitespace-pre-wrap 保留换行（没有 typography 插件，不能用 prose-*）
+      + `<div class="glass-card rounded-2xl p-4 whitespace-pre-wrap text-body-md font-body-md">${esc(career.prose)}</div>`;
+  }
+
   async function loadCareer() {
     const res = await fetch(`/api/session/${encodeURIComponent(sessionId)}/career`);
     const json = await res.json();
@@ -74,15 +91,7 @@
       setMsg((json.errors && json.errors[0]) || '加载失败', true);
       return;
     }
-    const out = document.getElementById('careerOut');
-    if (!out) return;
-    out.innerHTML =
-      `<details class="glass-card rounded-2xl p-4 mb-4">`
-      + `<summary class="font-label-sm text-label-sm text-primary cursor-pointer">结构化 JSON</summary>`
-      + `<pre class="mt-3 overflow-x-auto text-xs">${esc(JSON.stringify(json.career.json, null, 2))}</pre>`
-      + `</details>`
-      // 散文是带换行的纯文本，用 whitespace-pre-wrap 保留换行（没有 typography 插件，不能用 prose-*）
-      + `<div class="glass-card rounded-2xl p-4 whitespace-pre-wrap text-body-md font-body-md">${esc(json.career.prose)}</div>`;
+    renderCareer(json.career);
   }
 
   async function main() {
@@ -98,4 +107,10 @@
   }
 
   main();
+
+  // ---- 测试钩子（只给冒烟脚本用）----
+  // 本文件整体包在 IIFE 里，外部拿不到内部函数；
+  // 冒烟脚本要真正执行这里的渲染逻辑来验证大模型内容的转义，
+  // 所以在 IIFE 内部挂一个钩子。名字与 app.js 的顶层变量不冲突。
+  window.__resultTest = { esc, renderCareer };
 })();

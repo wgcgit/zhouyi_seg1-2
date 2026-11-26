@@ -25,7 +25,8 @@
 
   /** 转义后再拼进 innerHTML —— 回答来自大模型，不能直接塞 */
   function esc(v) {
-    return String(v)
+    // 服务端 content 可能是 null/undefined，兜底成空串，别显示字面量 "undefined"
+    return String(v === null || v === undefined ? '' : v)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
@@ -77,10 +78,10 @@
   });
 
   document.getElementById('btnChartResult').addEventListener('click', () => {
-    window.open(`./chart.html?session=${encodeURIComponent(sessionId)}`, '_blank');
+    window.open(`./chart.html?session=${encodeURIComponent(sessionId)}`, '_blank', 'noopener');
   });
   document.getElementById('btnCareerResult').addEventListener('click', () => {
-    window.open(`./career.html?session=${encodeURIComponent(sessionId)}`, '_blank');
+    window.open(`./career.html?session=${encodeURIComponent(sessionId)}`, '_blank', 'noopener');
   });
 
   if (!sessionId) {
@@ -88,4 +89,10 @@
   } else {
     loadHistory();
   }
+
+  // ---- 测试钩子（只给冒烟脚本用）----
+  // 本文件整体包在 IIFE 里，外部拿不到内部函数；
+  // 冒烟脚本要真正执行这里的渲染逻辑来验证 XSS 转义，
+  // 所以在 IIFE 内部挂一个钩子。名字与 app.js 的顶层变量不冲突。
+  window.__chatTest = { appendMessage, esc };
 })();
