@@ -184,7 +184,9 @@ zhouyi_seg1-2/
 
 ```bash
 SRC=../zhouyi_seg1_v2
-mkdir -p backend/src backend/prompts backend/scripts backend/skills backend/public/css backend/public/js backend/tests docs
+mkdir -p backend/src/llm backend/src/career backend/src/routes \
+         backend/prompts backend/scripts backend/skills \
+         backend/public/css backend/public/js backend/tests docs
 
 cp -r $SRC/backend/src/calendar $SRC/backend/src/core $SRC/backend/src/analyze \
       $SRC/backend/src/fortune $SRC/backend/src/geo $SRC/backend/src/chart backend/src/
@@ -243,6 +245,156 @@ ls backend/tests/
 ```
 
 预期列出 10 个文件，**不含** `interpret.test.js` / `interpret-prompt-failure.test.js` / `llm.test.js` / `llm-attempts.test.js` / `llm-truncation.test.js`（这 5 个是解读层的，本产品不需要）。
+
+- [ ] **Step 2b: 改写 `input-validation.test.js`（必须做，否则 Step 7 不可能全绿）**
+
+v2 的 `input-validation.test.js` 有 **36 条断言**，其中 **19 条打的是 `/api/interpret`** ——
+而 Step 1b 恰好把那个路由摘了。**原样拷贝过来跑，实测是 19 failed / 17 passed**：
+```
+● 非法日期必须被 400 拦掉 › interpret 路由：2024 年 2 月 31 日 返回 400 与中文错误
+● 数组 / 对象 / 布尔值不得蒙混过关 › year 为数组时 interpret 返回 400
+● 两个路由的校验等价性 › paipan 与 interpret 对「2 月 31 日」给出的 errors 完全一致
+……（共 19 条，全部是 interpret 相关）
+```
+另外它顶部有 `jest.mock('../src/llm/client', …)`，而 **`client.js` 要到 Task 6 才拷进来** ——
+不处理的话连测试文件都加载不了（`Cannot find module '../src/llm/client'`）。
+
+**本产品的等价性基准换成 `/api/paipan` 与 `/api/session`**（后者是 Task 8 建的），
+但 Task 1 阶段 `/api/session` 还不存在，所以**分两步走**：
+
+**Task 1 这一步只做「去掉 interpret、去掉 llm mock」**：
+
+把 `backend/tests/input-validation.test.js` 改写成下面这份（**逐字替换整个文件**）：
+
+```javascript
+'use strict';
+
+// 入参校验的回归测试：非法日期、数组值、类型与长度限制。
+// 本产品不移植解读层（无 /api/interpret），所以这里只测 /api/paipan 一条路由。
+// 「两个路由的校验等价性」在 Task 8 由 session.test.js 接手（/api/paipan vs /api/session）。
+
+const request = require('supertest');
+const { createApp } = require('../src/app');
+
+const VALID = {
+  name: '张三', gender: 'male',
+  year: 1990, month: 5, day: 15,
+  hour: 10, minute: 30, second: 0,
+  province: '北京市', city: '东城区',
+};
+
+const BAD_DATES = [
+  { label: '2024 年 2 月 31 日', body: { year: 2024, month: 2, day: 31 } },
+  { label: '4 月 31 日', body: { month: 4, day: 31 } },
+  { label: '6 月 31 日', body: { month: 6, day: 31 } },
+  { label: '平年 2023 年 2 月 29 日', body: { year: 2023, month: 2, day: 29 } },
+];
+
+describe('非法日期必须被 400 拦掉', () => {
+  let app;
+  beforeAll(() => { app = createApp(); });
+
+  for (const c of BAD_DATES) {
+    test(`paipan 路由：${c.label} 返回 400 与中文错误`, async () => {
+      const res = await request(app).post('/api/paipan/chart').send({ ...VALID, ...c.body });
+      expect(res.status).toBe(400);
+      expect(Array.isArray(res.body.errors)).toBe(true);
+      expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    });
+  }
+
+  test('闰年 2024 年 2 月 29 日是合法日期，paipan 放得过', async () => {
+    const res = await request(app)
+      .post('/api/paipan/chart')
+      .send({ ...VALID, year: 2024, month: 2, day: 29 });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('数组 / 对象 / 布尔值不得蒙混过关', () => {
+  let app;
+  beforeAll(() => { app = createApp(); });
+
+  const BAD_YEARS = [
+    { label: '数组', value: [1990] },
+    { label: '布尔', value: true },
+    { label: '对象', value: { year: 1990 } },
+  ];
+
+  for (const b of BAD_YEARS) {
+    test(`year 为${b.label}时 paipan 返回 400`, async () => {
+      const res = await request(app).post('/api/paipan/chart').send({ ...VALID, year: b.value });
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    });
+  }
+
+  test('month 为数组时同样被拦掉', async () => {
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, month: [5] });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('姓名与省市的类型、长度限制（B-4）', () => {
+  let app;
+  beforeAll(() => { app = createApp(); });
+
+  test('超长 name 被 400 拦掉且错误是中文', async () => {
+    const long33 = '张三'.repeat(17);
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, name: long33 });
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+  });
+
+  test('超长 province 被 400 拦掉', async () => {
+    const long33 = '北京'.repeat(17);
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, province: long33 });
+    expect(res.status).toBe(400);
+  });
+
+  test('超长 city 被 400 拦掉', async () => {
+    const long33 = '东城'.repeat(17);
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, city: long33 });
+    expect(res.status).toBe(400);
+  });
+
+  test('name 为非字符串时报中文错误', async () => {
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, name: 123 });
+    expect(res.status).toBe(400);
+  });
+
+  test('province 为非字符串时报中文错误', async () => {
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, province: 123 });
+    expect(res.status).toBe(400);
+  });
+
+  test('city 为非字符串时报中文错误', async () => {
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, city: 123 });
+    expect(res.status).toBe(400);
+  });
+
+  test('长度恰好 32 的 name 放得过', async () => {
+    const name32 = '张'.repeat(32);
+    const res = await request(app).post('/api/paipan/chart').send({ ...VALID, name: name32 });
+    expect(res.status).toBe(200);
+  });
+});
+```
+
+> **改动清单**：删掉顶部 `jest.mock('../src/llm/client', …)` 与 `const { callMiniMax } = require('../src/llm/client');`
+> （`client.js` 要到 Task 6 才存在，留着就 `Cannot find module`）；
+> 删掉全部 19 条 `interpret 路由` / `paipan 与 interpret 的 errors 完全一致` 断言；
+> 保留 16 条针对 `/api/paipan` 的断言（非法日期、类型蒙混、长度限制）。
+>
+> **「两个路由校验等价性」不能就此丢掉** —— Task 8 会用 `/api/paipan` 与 `/api/session`
+> 各出一条非法输入、断言两者 `errors` 完全一致（见 Task 8 Step 1）。
+>
+> **不要为了让它绿而删更多断言。** 上面的 16 条要**全部保留**；
+> 若某条真的挂了，是实现的问题，报上来，不要改断言。
+>
+> **已实测**：按上面的文件改写后，Task 1 状态下（**没有** `backend/src/llm/`）
+> 这个测试文件 **16/16 全绿**；连同其余 9 个拷贝过来的测试文件，
+> Task 1 结束时是 **10 个测试文件 / 264 个测试全绿**。
 
 - [ ] **Step 3: 写根 `package.json`**
 
@@ -359,7 +511,10 @@ npm run install:all
 npm test
 ```
 
-预期：**10 个测试文件全绿**。若 `api.test.js` 失败，多半是 `backend/public/index.html` 或 `app.js` 的路径断言——检查拷贝是否完整。若报 `Cannot find module './routes/interpret'`，回 Step 1b 把那两行摘掉。
+预期：**10 个测试文件 / 264 个测试全绿**（已实测）。
+若 `api.test.js` 失败，多半是 `backend/public/index.html` 或 `app.js` 的路径断言——检查拷贝是否完整。
+若报 `Cannot find module './routes/interpret'`，回 Step 1b 把那两行摘掉。
+若 `input-validation.test.js` 报 `Cannot find module '../src/llm/client'`，说明 Step 2b 没做。
 
 - [ ] **Step 8: 提交**
 
@@ -2735,6 +2890,25 @@ describe('会话编排', () => {
     const res = await request(app).post('/api/interpret').send(VALID_BODY);
     expect(res.status).toBe(404);
   });
+
+  // 「两个路由的校验等价性」在 Task 1 的 input-validation.test.js 里被删掉了
+  // （那时 /api/interpret 已被摘除，基线是 paipan vs interpret）。
+  // 本产品的等价基准换成 paipan vs session —— 在这里补上。
+  test('paipan 与 session 对同一份非法输入给出的 errors 完全一致', async () => {
+    const BAD_CASES = [
+      { label: '2 月 31 日', body: { year: 2024, month: 2, day: 31 } },
+      { label: 'year 为数组', body: { year: [1990] } },
+      { label: '缺少 province/city', body: { province: '', city: '' } },
+      { label: 'gender 无法识别', body: { gender: 'x' } },
+    ];
+    for (const c of BAD_CASES) {
+      const paipanRes = await request(app).post('/api/paipan/chart').send({ ...VALID_BODY, ...c.body });
+      const sessionRes = await request(app).post('/api/session').send({ ...VALID_BODY, ...c.body });
+      expect(paipanRes.status).toBe(400);
+      expect(sessionRes.status).toBe(400);
+      expect(sessionRes.body.errors).toEqual(paipanRes.body.errors);
+    }
+  });
 });
 ```
 
@@ -2943,7 +3117,11 @@ const sessionRouter = require('./routes/session');
 cd backend && npx jest tests/session.test.js
 ```
 
-预期：**8 个测试全绿**（提交 202 / 参数非法 400 / 轮询到 ready / 取回两个结果 / 阶段二失败转 error / 会话不存在 404 / 追加与读取历史 / 解读层路由已不存在）。
+预期：**9 个测试全绿**（提交 202 / 参数非法 400 / 轮询到 ready / 取回两个结果 / 阶段二失败转 error / 会话不存在 404 / 追加与读取历史 / 解读层路由已不存在 / paipan 与 session 校验等价）。
+
+> 最后一条是 Task 1 的 `input-validation.test.js` 里删掉的那条「两个路由校验等价性」的**替代品**：
+> v2 的基线是 paipan vs interpret，本产品没有 interpret 路由，基线换成 paipan vs session。
+> 两条路由共用 `normalizeInput`，所以 `errors` 数组必须逐字相等。
 
 - [ ] **Step 6: 跑全量测试**
 
@@ -4269,4 +4447,24 @@ Task 2 必须在 Task 6 之前完成（prompt.js 要读改写后的 master）。
     漏了追加 ⇒ chat 路由拿不到会话表 ⇒ `/api/chat` 对任何 id 都返回 404，
     而 `/api/session/:id/history` 照样 200 —— **症状是「chat 路由 404」，
     根因却是会话表没共享**。
+26. **「逐字拷贝」的测试文件里可能藏着解读层的断言**（Task 1）。
+    v2 的 `input-validation.test.js` 有 **19 条断言打的是 `/api/interpret`** ——
+    而 Task 1 Step 1b 恰好把那个路由摘了。**原样拷过来跑，实测 19 failed / 17 passed**，
+    「10 个测试文件全绿」不成立。
+    该文件顶部还有 `jest.mock('../src/llm/client', …)`，而 `client.js` 要到 Task 6 才拷 ——
+    不处理就 `Cannot find module '../src/llm/client'`，**测试文件根本加载不了**。
+    ⇒ Task 1 Step 2b 把它改写成只测 `/api/paipan` 的 16 条（**已实测 16/16 绿**，
+    Task 1 结束时 10 个文件 / 264 个测试全绿）。
+    **教训**：「逐字拷贝」之前先 grep 一遍那个测试文件里有没有已删功能的路由名。
+27. **「两个路由校验等价性」的基线要跟着换**（Task 1 / Task 8）。
+    v2 的基线是 paipan vs interpret；本产品没有 interpret 路由，
+    基线换成 **paipan vs session**（两条都走 `normalizeInput`，`errors` 必须逐字相等）。
+    Task 1 阶段 `/api/session` 还不存在，所以等价性断言放在 **Task 8**。
+    **别把这条测试整个丢掉** —— 它验的是两条路由共用同一个校验器。
+28. **Task 1 的 mkdir 要建全子目录**。
+    `backend/src/llm`（Task 6 要 cp `client.js` 进去）与 `backend/src/career`
+    （Task 3/4/5 要写文件进去）在 Task 1 的 `mkdir` 清单里**漏了**。
+    `cp` 不会自动建目录 —— 实测报 `cp: cannot create regular file
+    'backend/src/llm/client.js': No such file or directory`，**整条命令退出码 1**，
+    后面跟着的 `&&` 一串都不执行。
 

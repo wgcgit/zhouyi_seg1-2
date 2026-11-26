@@ -432,7 +432,7 @@ user:
 | `session.test.js` | `POST /api/session` 202 + 带回 chart；轮询 pending→ready；四柱不一致时判废 |
 | `chat.test.js` | mock LLM：上下文含推理结果与 skill 知识；回答原样返回；session 不存在时 404 |
 | `api.test.js` | 拷自 v2，改动点：`/api/paipan/schema` 仍返回 12 字段；新增接口的 404 中文 |
-| 离线引擎测试 | 逐字拷贝 v2 的 `analysis/calendar/derived/fortune/geo/pillars/shensha/input-validation` 等测试 |
+| 离线引擎测试 | 逐字拷贝 v2 的 `analysis/calendar/derived/fortune/geo/pillars/shensha` 等测试；**`input-validation.test.js` 需改写** —— 它有 19 条断言打的是被摘掉的 `/api/interpret` 路由，且顶部 mock 了要到阶段二才存在的 `src/llm/client`；改写后只测 `/api/paipan` 的 16 条断言，其中「两路由校验等价性」一条移到 `session.test.js`，基线换成 **paipan vs session** |
 
 **硬约束（沿用 v2）**：
 - 新增/修改的断言**必须先红后绿**，不许靠调断言数值让测试变绿。
