@@ -19,7 +19,7 @@ describe('GET /api/health', () => {
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.service).toBe('zhouyi-v2-offline');
+    expect(res.body.service).toBe('zhouyi-seg1-2');
   });
 });
 
@@ -29,7 +29,7 @@ describe('GET /health', () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.service).toBe('zhouyi-v2-offline');
+    expect(res.body.service).toBe('zhouyi-seg1-2');
     const alias = await request(app).get('/api/health');
     expect(res.body).toEqual(alias.body);
   });
