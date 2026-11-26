@@ -5,6 +5,7 @@ const cors = require('cors');
 const path = require('path');
 const paipanRouter = require('./routes/paipan');
 const sessionRouter = require('./routes/session');
+const chatRouter = require('./routes/chat');
 
 /**
  * 组装 Express 应用（不调用 listen，便于测试用 supertest 直接驱动）。
@@ -24,6 +25,10 @@ function createApp() {
 
   app.use('/api/paipan', paipanRouter);
   app.use('/api/session', sessionRouter);
+  app.use('/api/chat', chatRouter);
+
+  // 会话表挂在 app.locals 上，供 chat 路由读取（session 路由的 SESSIONS 是同一个 Map）
+  app.locals.sessions = sessionRouter.SESSIONS;
 
   // 前端静态资源（存在时才挂载）
   const publicDir = path.join(__dirname, '..', 'public');

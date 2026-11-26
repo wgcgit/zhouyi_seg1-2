@@ -160,3 +160,5 @@ router.post('/:id/history', (req, res) => {
 });
 
 module.exports = router;
+// 会话表共享给 chat 路由（app.locals.sessions = sessionRouter.SESSIONS）
+module.exports.SESSIONS = SESSIONS;
