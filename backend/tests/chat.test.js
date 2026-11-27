@@ -269,4 +269,82 @@ describe('chat 问答', () => {
     );
     expect(userHits.length).toBe(1);
   });
+
+  /**
+   * D-1：对话过长时的**优雅失败**（不是截断，是拒绝 + 明确提示）。
+   *
+   * 规格明写「多轮上下文全部重发，不做截断」，所以历史里塞多少都在。
+   * 但无界塞进 prompt ⇒ 超出模型上下文 ⇒ 模型报错 ⇒ 用户只看到 500「问答失败」。
+   * 这里断言：预算超了 ⇒ 400 + 中文提示 + **一次模型调用都不发**。
+   */
+  test('历史过长导致 prompt 超预算时返回 400，且不调用模型', async () => {
+    const id = await makeReadySession(app);
+    const session = app.locals.sessions.get(id);
+    // 历史全量保留（不做截断），只是超预算
+    session.history.push({ role: 'user', content: '字'.repeat(130000) });
+    const res = await request(app)
+      .post('/api/chat')
+      .send({ sessionId: id, message: '我适合做什么行业？' });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    // 关键：不能白烧一次大模型调用
+    expect(client.callMiniMax).not.toHaveBeenCalled();
+  });
+
+  test('对话超预算时，历史仍然完整保留（只是不再塞进 prompt）', async () => {
+    const id = await makeReadySession(app);
+    const session = app.locals.sessions.get(id);
+    session.history.push({ role: 'user', content: '字'.repeat(130000) });
+    await request(app).post('/api/chat').send({ sessionId: id, message: '我适合做什么行业？' });
+    const hist = await request(app).get(`/api/session/${id}/history`);
+    expect(hist.body.history).toHaveLength(1);
+    expect(hist.body.history[0].content.length).toBe(130000);
+  });
+
+  test('正常长度的对话仍然能问出答案（预算预检不能误伤）', async () => {
+    const id = await makeReadySession(app);
+    const session = app.locals.sessions.get(id);
+    session.history.push({ role: 'user', content: '字'.repeat(50000) });
+    const res = await request(app)
+      .post('/api/chat')
+      .send({ sessionId: id, message: '我适合做什么行业？' });
+    expect(res.status).toBe(200);
+    expect(client.callMiniMax).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * D-1：prompt 预算上限的常量**只许写在一处**（chat.js）。
+   * 散落到别的文件就会各自漂移，最后两边不一致。
+   */
+  test('prompt 预算上限的常量只写在 chat.js 一处', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const routesDir = path.join(__dirname, '..', 'src', 'routes');
+    const files = fs.readdirSync(routesDir).filter((f) => f.endsWith('.js'));
+    const hits = files.filter((f) => fs.readFileSync(path.join(routesDir, f), 'utf8').includes('MAX_PROMPT_CHARS'));
+    expect(hits).toEqual(['chat.js']);
+  });
+
+  /** D-2：单条提问的长度上限 */
+  test('提问超过 2000 字返回 400，且不调用模型', async () => {
+    const id = await makeReadySession(app);
+    const res = await request(app)
+      .post('/api/chat')
+      .send({ sessionId: id, message: '字'.repeat(2001) });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    expect(res.body.errors[0]).toMatch(/长度/);
+    expect(client.callMiniMax).not.toHaveBeenCalled();
+  });
+
+  test('提问刚好 2000 字是允许的（边界）', async () => {
+    const id = await makeReadySession(app);
+    const res = await request(app)
+      .post('/api/chat')
+      .send({ sessionId: id, message: '字'.repeat(2000) });
+    expect(res.status).toBe(200);
+    expect(client.callMiniMax).toHaveBeenCalledTimes(1);
+  });
 });
