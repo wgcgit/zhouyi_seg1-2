@@ -4,10 +4,13 @@
 
 /**
  * 聊天页。
- * ★ 整个文件包在 IIFE 里，一个全局变量都不往外露。
+ * ★ 整个文件包在 IIFE 里，业务代码不往外露全局变量。
  *   `chat.js` 的 `setMsg` / `esc` / `sessionId` 与 `app.js` 同名；
  *   将来若某个页面同时引两个脚本，顶层同名声明会互相覆盖，
  *   `const` 同名更是直接抛 SyntaxError 让整页白屏。包 IIFE 就没这问题。
+ *   唯一的例外是文件末尾挂的测试钩子 `window.__chatTest` ——
+ *   它是为了让冒烟脚本能在 vm 里真正执行这里的渲染逻辑（验证大模型内容的转义），
+ *   只在 IIFE 内部挂，不影响页面上的全局作用域。
  */
 (function () {
   const params = new URLSearchParams(window.location.search);
@@ -16,6 +19,10 @@
   const messagesEl = document.getElementById('messages');
   const inputEl = document.getElementById('chat-input');
   const msgEl = document.getElementById('msg');
+  const sendBtn = document.getElementById('btnSend');
+
+  /** 正在等大模型回答 —— 连点两下会多烧一次调用，用它挡住重复提交 */
+  let sending = false;
 
   function setMsg(text, isError) {
     if (!msgEl) return;
@@ -52,24 +59,34 @@
   }
 
   async function send() {
+    // 上一次还没回来就再点 ⇒ 直接忽略，别多烧一次大模型调用
+    if (sending) return;
     const message = inputEl.value.trim();
     if (!message) return;
     inputEl.value = '';
     appendMessage('user', message);
     setMsg('思考中…');
+    sending = true;
+    if (sendBtn) sendBtn.disabled = true;
 
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setMsg((json.errors && json.errors[0]) || '问答失败，请重试', true);
-      return;
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, message }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setMsg((json.errors && json.errors[0]) || '问答失败，请重试', true);
+        return;
+      }
+      setMsg('');
+      appendMessage('assistant', json.answer);
+    } finally {
+      // 无论成功失败都恢复按钮 —— 否则一次失败后按钮永远点不动
+      sending = false;
+      if (sendBtn) sendBtn.disabled = false;
     }
-    setMsg('');
-    appendMessage('assistant', json.answer);
   }
 
   document.getElementById('btnSend').addEventListener('click', send);

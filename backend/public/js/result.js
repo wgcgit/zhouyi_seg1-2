@@ -6,7 +6,7 @@
  * 勘验页：按 URL 上的 session 拉数据并渲染。
  * chart.html 渲染命盘，career.html 渲染事业推理结果 —— 用页面上是否存在 #careerOut 区分。
  *
- * ★ 整个文件包在 IIFE 里，一个全局变量都不往外露。
+ * ★ 整个文件包在 IIFE 里，业务代码不往外露全局变量。
  *   chart.html 同时加载 app.js 和 result.js —— 两个都是普通 <script>，
  *   共享同一个全局作用域。若 result.js 在顶层声明 `function renderChart` /
  *   `function setMsg` / `function esc` / `const sessionId`，
@@ -18,6 +18,9 @@
  *       浏览器直接抛 `SyntaxError: Identifier 'sessionId' has already been declared`，
  *       **整页白屏**。
  *   包 IIFE 就把这两类问题一起消掉。
+ *   唯一的例外是文件末尾挂的测试钩子 `window.__resultTest` ——
+ *   它是为了让冒烟脚本能在 vm 里真正执行这里的渲染逻辑（验证大模型内容的转义），
+ *   只在 IIFE 内部挂，不影响页面上的全局作用域。
  */
 (function () {
   const params = new URLSearchParams(window.location.search);
