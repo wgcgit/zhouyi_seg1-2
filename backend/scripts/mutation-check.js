@@ -5,7 +5,7 @@
  * 跑仓库里**原封不动**的测试文件，看哪些断言变红。
  *
  * 用法：node scripts/mutation-check.js <case>
- *   case = render | run | session | app
+ *   case = render | run | session | app | chat | contract
  *
  * 副本放在仓库外的临时目录里，且把它内部的相对 require 全部改写成绝对路径，
  * 这样副本仍能引用真实的同级模块，而仓库本身一个字节都不动。
@@ -43,7 +43,13 @@ function absolutizeRequires(code, originalDir) {
 
 function runJest(name, testFile, modulePath, extraTests) {
   const mapper = {};
-  mapper['^' + modulePath.replace(/\\/g, '/') + '$'] = path.join(SANDBOX, name, 'mutant.js').replace(/\\/g, '/');
+  const mutant = path.join(SANDBOX, name, 'mutant.js').replace(/\\/g, '/');
+  mapper['^' + modulePath.replace(/\\/g, '/') + '$'] = mutant;
+  // 测试文件常用另一种写法定位同一个模块（require.resolve('../src/xxx')），
+  // 这些别名也要一起指到副本，否则源码扫描类的守门在变异下永远扫的是原文件。
+  for (const alias of moduleAliases[modulePath] || []) {
+    mapper['^' + alias.replace(/\\/g, '/') + '$'] = mutant;
+  }
   const args = [
     path.join(BACKEND, 'node_modules', 'jest', 'bin', 'jest.js'),
     '--config', JSON.stringify({
@@ -68,6 +74,19 @@ function summarize(out) {
   while ((mm = re.exec(out)) !== null) names.push(mm[1].trim());
   return { summary: m ? m[1].trim() : '(没解析出 Tests 行)', failedNames: names };
 }
+
+/**
+ * 同一个模块在测试里的其它写法（别名）。
+ *
+ * 测试文件有时用 require.resolve('../src/xxx') 定位模块，
+ * 而被测代码用相对写法 require('./xxx')。
+ * 只映射一种写法 ⇒ 源码扫描类的守门扫的是原文件，不是副本 ⇒ 变异下永远绿（没有判别力）。
+ */
+const moduleAliases = {
+  './routes/session': ['../src/routes/session'],
+  './routes/chat': ['../src/routes/chat'],
+  '../src/career/run': [],
+};
 
 const CASES = {
   render: {
@@ -98,6 +117,7 @@ const CASES = {
     file: path.join(BACKEND, 'src', 'routes', 'session.js'),
     modulePath: './routes/session',
     test: 'tests/session.test.js',
+    extraTests: ['tests/api-errors.test.js'],
     mutations: [
       { name: 'S1 提交返回码 202 改 200', pairs: [[
         "res.status(202).json({ success: true, sessionId, status: 'pending', chart });",
@@ -119,13 +139,46 @@ const CASES = {
         "if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string' || !content.trim()) {",
         "if (false) {",
       ]] },
-      { name: 'S6 会话不存在时返回 404 改 500', pairs: [[
-        "res.status(404).json({ success: false, errors: ['会话不存在或已过期'] })",
-        "res.status(500).json({ success: false, errors: ['会话不存在或已过期'] })",
+      { name: 'S6 会话不存在时返回 404 改 500（status 路由）', pairs: [[
+        "if (!session) {\n    return res.status(404).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });\n  }\n  res.json({\n    success: true,\n    sessionId: session.id,",
+        "if (!session) {\n    return res.status(500).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });\n  }\n  res.json({\n    success: true,\n    sessionId: session.id,",
       ]] },
       { name: 'S7 追加历史响应里的 count 恒为 1', pairs: [[
         'res.json({ success: true, count: session.history.length });',
         'res.json({ success: true, count: 1 });',
+      ]] },
+      // ---- Task 12 新增的守门 ----
+      { name: 'S8 [D-4] session 路由不共用排盘 options（退回各自复制）', pairs: [[
+        'chart = buildChart(input, chartOptionsFrom(req.body));',
+        'chart = buildChart(input, chartOptionsFrom({}));',
+      ]] },
+      { name: 'S9 [D-2] 追加历史时不校验单条消息长度', pairs: [[
+        'if (content.trim().length > MAX_MESSAGE_LENGTH) {',
+        'if (false) {',
+      ]] },
+      { name: 'S10 [D-5] 排盘失败时返回 500 而不是 400', pairs: [[
+        "console.error(API_ERRORS.LOG_CHART_FAILED, chineseError(error && error.message, CHART_ERROR_FALLBACK));\n    return res.status(400).json({",
+        "console.error(API_ERRORS.LOG_CHART_FAILED, chineseError(error && error.message, CHART_ERROR_FALLBACK));\n    return res.status(500).json({",
+      ]] },
+      { name: 'S11 [D-6] GET /:id/chart 的 404 改 500', pairs: [[
+        "if (!session) {\n    return res.status(404).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });\n  }\n  res.json({ success: true, chart: session.chart });",
+        "if (!session) {\n    return res.status(500).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });\n  }\n  res.json({ success: true, chart: session.chart });",
+      ]] },
+      { name: 'S12 [N-1] 会话编号退回 Date.now + Math.random', pairs: [[
+        "return 'sess_' + crypto.randomUUID();",
+        "return 'sess_' + Date.now() + '_' + Math.random();",
+      ]] },
+      { name: 'S13 [N-2] 过期清理跳过 pending 会话', pairs: [[
+        'if (now - lastActiveAt > SESSION_TTL_MS) SESSIONS.delete(id);',
+        'if (s.status !== \'pending\' && now - lastActiveAt > SESSION_TTL_MS) SESSIONS.delete(id);',
+      ]] },
+      { name: 'S14 [N-2] 访问会话不刷新最后活跃时间', pairs: [[
+        'session.lastActiveAt = Date.now();',
+        '/* 变异：不刷新最后活跃时间 */',
+      ]] },
+      { name: 'S15 [D-3] 把 404 文案改回裸的中文字面量', pairs: [[
+        'errors: [API_ERRORS.SESSION_NOT_FOUND]',
+        "errors: ['会话不存在或已过期']",
       ]] },
     ],
   },
@@ -145,22 +198,23 @@ const CASES = {
     file: path.join(BACKEND, 'src', 'routes', 'chat.js'),
     modulePath: './routes/chat',
     test: 'tests/chat.test.js',
+    extraTests: ['tests/api-errors.test.js'],
     mutations: [
       { name: 'C1 会话还在推理中时不再返回 409', pairs: [[
         "if (session.status !== 'ready' || !session.career) {",
         'if (false) {',
       ]] },
       { name: 'C2 模型报错时返回 500 改 200', pairs: [[
-        'return res.status(500).json({',
-        'return res.status(200).json({',
+        'return res.status(500).json({\n      success: false,\n      errors: [toChineseError(error)],',
+        'return res.status(200).json({\n      success: false,\n      errors: [toChineseError(error)],',
       ]] },
       { name: 'C3 模型报错时透出英文原文', pairs: [[
         'errors: [toChineseError(error)],',
         'errors: [String((error && error.message) || error)],',
       ]] },
       { name: 'C4 模型返回空内容时返回 500 改 200', pairs: [[
-        "return res.status(500).json({ success: false, errors: ['大模型没有返回内容，请稍后重试'] });",
-        "return res.status(200).json({ success: false, errors: ['大模型没有返回内容，请稍后重试'] });",
+        'return res.status(500).json({ success: false, errors: [API_ERRORS.LLM_EMPTY_ANSWER] });',
+        'return res.status(200).json({ success: false, errors: [API_ERRORS.LLM_EMPTY_ANSWER] });',
       ]] },
       { name: 'C5 不把本轮问答写回会话历史', pairs: [[
         "session.history.push({ role: 'user', content: message });",
@@ -182,8 +236,8 @@ const CASES = {
         'if (false) {',
       ]] },
       { name: 'C9 409 文案固定化（丢掉 session.error 透出）', pairs: [[
-        "errors: [session.error || '事业推理尚未完成，请稍后再问'],",
-        "errors: ['事业推理尚未完成，请稍后再问'],",
+        'errors: [session.error || API_ERRORS.CHAT_CAREER_PENDING],',
+        'errors: [API_ERRORS.CHAT_CAREER_PENDING],',
       ]] },
       { name: 'C10 只挡 pending（error 态会话放行）', pairs: [[
         "if (session.status !== 'ready' || !session.career) {",
@@ -197,6 +251,23 @@ const CASES = {
         'buildChatSystemPrompt(session.career.json, session.career.prose)',
         'buildChatSystemPrompt(session.career.json, session.career.json)',
       ]] },
+      // ---- Task 12 新增的守门 ----
+      { name: 'C13 [D-1] 去掉 prompt 预算预检（超预算也照调模型）', pairs: [[
+        'if (systemPrompt.length + userPrompt.length > MAX_PROMPT_CHARS) {',
+        'if (false) {',
+      ]] },
+      { name: 'C14 [D-2] 提问长度上限失效', pairs: [[
+        'if (message.length > MAX_MESSAGE_LENGTH) {',
+        'if (false) {',
+      ]] },
+      { name: 'C15 [D-1] 预算上限写成天文数字（挡不住长对话）', pairs: [[
+        'const MAX_PROMPT_CHARS = 120000;',
+        'const MAX_PROMPT_CHARS = 100000000;',
+      ]] },
+      { name: 'C16 [D-3] 把 409 文案改回裸的中文字面量', pairs: [[
+        'errors: [session.error || API_ERRORS.CHAT_CAREER_PENDING],',
+        "errors: [session.error || '事业推理尚未完成，请稍后再问'],",
+      ]] },
     ],
   },
   run: {
@@ -209,11 +280,34 @@ const CASES = {
         'defects: [String((error && error.message) || error)]',
       ]] },
       { name: 'M2 四柱键名改回写死', pairs: [[
-        'for (const k of PILLAR_KEYS) {',
-        "for (const k of ['year', 'month', 'day', 'hour']) {",
+        'for (const k of PILLAR_KEYS) {\n      if (typeof modelPillars[k] === \'string\'',
+        'for (const k of [\'year\', \'month\', \'day\', \'hour\']) {\n      if (typeof modelPillars[k] === \'string\'',
       ]] },
-      { name: 'M3 去掉「命盘缺四柱就判废」', pairs: [[
-        "if (!chartPillars || typeof chartPillars !== 'object') {",
+      { name: 'M3 [D-8] 去掉「命盘缺四柱就判废」（先调模型再判）', pairs: [[
+        'if (!hasCompletePillars(chartPillars)) {',
+        'if (false) {',
+      ]] },
+      { name: 'M4 [D-7] 四柱比对只比年柱', pairs: [[
+        'for (const k of PILLAR_KEYS) {\n      if (typeof modelPillars[k] === \'string\'',
+        'for (const k of [\'year\']) {\n      if (typeof modelPillars[k] === \'string\'',
+      ]] },
+      { name: 'M5 [D-9] 四柱完整性只判「是不是对象」', pairs: [[
+        "if (!pillars || typeof pillars !== 'object') return false;\n  for (const k of PILLAR_KEYS) {\n    if (typeof pillars[k] !== 'string' || !pillars[k].trim()) return false;\n  }",
+        "if (!pillars || typeof pillars !== 'object') return false;",
+      ]] },
+    ],
+  },
+  contract: {
+    file: path.join(BACKEND, 'src', 'career', 'run.js'),
+    modulePath: '../src/career/run',
+    test: 'tests/career-contract-source.test.js',
+    mutations: [
+      { name: 'K1 [D-10] 契约源缺失时抛裸 ENOENT（不翻成中文）', pairs: [[
+        'throw describeContractSourceError(error);',
+        'throw error;',
+      ]] },
+      { name: 'K2 [D-10] ENOENT 不再翻译（直接原样返回）', pairs: [[
+        "if (error && error.code === 'ENOENT') {",
         'if (false) {',
       ]] },
     ],
@@ -224,7 +318,7 @@ function main() {
   const which = process.argv[2];
   const c = CASES[which];
   if (!c) {
-    console.error('用法：node scripts/mutation-check.js render|run|session|app');
+    console.error('用法：node scripts/mutation-check.js render|run|session|app|chat|contract');
     process.exit(2);
   }
   fs.mkdirSync(SANDBOX, { recursive: true });

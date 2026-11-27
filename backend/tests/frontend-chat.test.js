@@ -117,16 +117,24 @@ describe('IIFE 注释与测试钩子一致', () => {
 describe('聊天页的重复提交防护', () => {
   test('连点两下发送，只发出一次请求，且请求期间按钮被禁用', async () => {
     const { els, fetchCalls } = loadChatPage();
-    els['chat-input'].value = '我适合做什么行业？';
-
     const clickHandlers = els.btnSend.listeners.click || [];
     expect(clickHandlers.length).toBeGreaterThan(0);
 
-    // 连点两下：第二次必须被「正在发送」的闸挡住
-    clickHandlers[0]();
+    // 第一下：正常提问
+    els['chat-input'].value = '我适合做什么行业？';
     clickHandlers[0]();
     await new Promise((r) => setImmediate(r));
 
+    // 模拟「用户又打了一行字，又点了一下发送」——
+    // 真实场景就是这个：上一次还没回来，用户就又问了一句。
+    // 注意必须重新给输入框赋值：第一次发送已经把输入框清空了，
+    // 如果直接再点一下，send() 会因为「输入框是空的」提前返回，
+    // 那这条用例即使去掉重复提交防护也照样绿（= 没有判别力）。
+    els['chat-input'].value = '那我该先做什么？';
+    clickHandlers[0]();
+    await new Promise((r) => setImmediate(r));
+
+    // 关键断言：第二次必须被「正在发送」的闸挡住，只发一次请求
     expect(fetchCalls.length).toBe(1);
     // 请求还没回来 ⇒ 按钮必须是禁用的（前端能看见「正在发送」）
     expect(els.btnSend.disabled).toBe(true);
