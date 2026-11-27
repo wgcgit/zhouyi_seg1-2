@@ -3,11 +3,39 @@
 const client = require('../llm/client');
 const { buildCareerSystemPrompt, buildCareerUserPrompt } = require('../llm/prompt');
 const { PILLAR_KEYS } = require('../core/interactions');
-const { validateCareer } = require('./validate');
 const { renderCareerProse } = require('./render');
 
 /** 日志里最多展开几条缺陷（缺陷数组可能很长，前几条通常是根因） */
 const MAX_LOG_DEFECTS = 5;
+
+/**
+ * 契约源文件缺失时的中文提示。
+ *
+ * 契约源在**仓库根**的 docs/CAREER_SCHEMA.md（不在 backend/ 里面）——
+ * 部署包只打包 backend/ 时读不到，进程启动即崩。
+ * 这里给一句人话，让运维一眼看出是打包漏了，而不是去翻代码。
+ *
+ * @param {*} error 捕获到的异常
+ * @returns {Error} 带中文说明的异常
+ */
+function describeContractSourceError(error) {
+  if (error && error.code === 'ENOENT') {
+    return new Error(
+      '契约源文件缺失：找不到 ' + (error.path || '（未知路径）') +
+      '。部署包必须包含仓库根的 docs/ 目录（docs/CAREER_SCHEMA.md）。',
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+// 契约校验器在加载时会读仓库根的 docs/CAREER_SCHEMA.md；
+// 读不到就把裸 ENOENT 翻成一句人话。
+let validateCareer;
+try {
+  validateCareer = require('./validate').validateCareer;
+} catch (error) {
+  throw describeContractSourceError(error);
+}
 
 /** 判断一段文字里有没有中文 */
 function hasChinese(text) {
@@ -39,15 +67,36 @@ function chineseError(error) {
 }
 
 /**
+ * 命盘的四柱是否完整。
+ *
+ * 四个键（year/month/day/hour）都必须存在且是非空字符串 ——
+ * 只判「pillars 是不是对象」不够：pillars 是对象但缺 hour 键时，
+ * 比对循环会拿 undefined 去比，缺陷消息里出现英文 undefined，
+ * 还会误导性归因成「模型改写了时辰」。
+ *
+ * @param {*} pillars 命盘里的 pillars
+ * @returns {boolean} 是否完整
+ */
+function hasCompletePillars(pillars) {
+  if (!pillars || typeof pillars !== 'object') return false;
+  for (const k of PILLAR_KEYS) {
+    if (typeof pillars[k] !== 'string' || !pillars[k].trim()) return false;
+  }
+  return true;
+}
+
+/**
  * 跑一轮「调用 → 解析 → 四柱比对 → 契约校验」。
  *
  * 顺序是刻意的，**不能改**：
- *   1. 调用模型；
- *   2. 解析 JSON；
- *   3. 四柱比对 —— 解读层不得重排四柱，离线命盘是程序与模型之间的唯一接口，
+ *   1. **本地**检查命盘四柱完整性 —— 这一步是纯本地的，
+ *      放在调模型之前，缺四柱就直接判废，不白烧一次大模型调用；
+ *   2. 调用模型；
+ *   3. 解析 JSON；
+ *   4. 四柱比对 —— 解读层不得重排四柱，离线命盘是程序与模型之间的唯一接口，
  *      模型若把四柱改写了，整份推理就是基于错误命盘生成的，必须**当场判废**；
  *      这项检查只能在 run.js 里做（validateCareer 只拿到 data，不知道离线命盘）；
- *   4. 契约校验（validateCareer 只管形状：13 键、枚举、必填、minItems 等）。
+ *   5. 契约校验（validateCareer 只管形状：13 键、枚举、必填、minItems 等）。
  *
  * @param {object} chart 离线命盘
  * @param {object} [options] `{ callLLM?: Function, maxRounds?: number }`
@@ -57,6 +106,14 @@ function chineseError(error) {
 async function runCareerOnce(chart, options) {
   const opts = options || {};
   const callLLM = opts.callLLM || client.callMiniMax;
+
+  // 离线命盘缺四柱属于上游出了 bug（buildChart 的契约里 pillars 一定完整），
+  // 此时四柱比对整条防线失效，必须响亮地判废，而不是静默放行模型的任意四柱。
+  // 这个检查是纯本地的 ⇒ 放在调模型之前，不浪费一次大模型调用。
+  const chartPillars = chart && chart.pillars;
+  if (!hasCompletePillars(chartPillars)) {
+    return { data: null, parsed: true, defects: ['缺少离线命盘的四柱，无法核对模型输出'] };
+  }
 
   let raw;
   try {
@@ -77,12 +134,6 @@ async function runCareerOnce(chart, options) {
   // 解读层不得重排四柱：命盘 JSON 是离线层与模型之间的唯一接口。
   // 模型若把四柱改写了，整份推理就是基于错误命盘生成的，必须当场判废。
   const modelPillars = data.case && data.case.pillars;
-  const chartPillars = chart && chart.pillars;
-  // 离线命盘缺四柱属于上游出了 bug（buildChart 的契约里 pillars 一定存在），
-  // 此时四柱比对整条防线失效，必须响亮地判废，而不是静默放行模型的任意四柱。
-  if (!chartPillars || typeof chartPillars !== 'object') {
-    return { data: null, parsed: true, defects: ['缺少离线命盘的四柱，无法核对模型输出'] };
-  }
   if (modelPillars && typeof modelPillars === 'object') {
     for (const k of PILLAR_KEYS) {
       if (typeof modelPillars[k] === 'string' && modelPillars[k] !== chartPillars[k]) {
@@ -136,4 +187,4 @@ async function runCareerRounds(chart, options) {
   return { data: null, prose: '', parsed, defects };
 }
 
-module.exports = { runCareerOnce, runCareerRounds };
+module.exports = { runCareerOnce, runCareerRounds, describeContractSourceError, hasCompletePillars };

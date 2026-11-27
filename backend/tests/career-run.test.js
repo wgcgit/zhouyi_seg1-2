@@ -122,12 +122,77 @@ describe('阶段二的调用与校验', () => {
     expect(r.defects).toHaveLength(1);
     expect(r.defects[0]).toMatch(/[一-龥]/);
   });
+
+  /**
+   * D-7：四柱比对必须**四柱都比**。
+   *
+   * 复审实测：把比对循环改成只比 ['year']，原有 12 条测试全绿 ——
+   * 也就是说模型把月/日/时柱改写了，校验根本查不出来。
+   */
+  test.each(['month', 'day', 'hour'])('四柱的 %s 被改写时判废', async (key) => {
+    client.callMiniMax.mockResolvedValue('{}');
+    const tampered = JSON.parse(JSON.stringify(SAMPLE));
+    tampered.case.pillars[key] = '庚午';
+    client.parseLLMJson.mockReturnValue(tampered);
+    const r = await runCareerOnce(CHART);
+    expect(r.data).toBeNull();
+    expect(r.defects.join()).toContain('四柱');
+    expect(r.defects.join()).toContain(key);
+  });
+
+  /**
+   * D-8：命盘缺四柱时**不能调模型**。
+   *
+   * 缺四柱是纯本地就能判定的缺陷，检查放在调模型之前，
+   * 才不会白烧 3 次真实 LLM 调用 + 3 条错误日志。
+   */
+  test('命盘缺少四柱时判废，且一次模型调用都不发', async () => {
+    client.callMiniMax.mockResolvedValue('{}');
+    client.parseLLMJson.mockReturnValue(JSON.parse(JSON.stringify(SAMPLE)));
+    const r = await runCareerOnce({});
+    expect(r.data).toBeNull();
+    expect(r.defects).toHaveLength(1);
+    expect(r.defects[0]).toMatch(/四柱/);
+    // 关键断言：模型根本没被调用
+    expect(client.callMiniMax).not.toHaveBeenCalled();
+  });
+
+  /**
+   * D-9：chart.pillars 是对象但缺某个键 ⇒ 不能误导性归因成「模型改写了时辰」。
+   */
+  test('命盘四柱缺 hour 键时归因为缺少四柱，不出现 undefined', async () => {
+    client.callMiniMax.mockResolvedValue('{}');
+    client.parseLLMJson.mockReturnValue(JSON.parse(JSON.stringify(SAMPLE)));
+    const chart = { pillars: { year: '戊辰', month: '己未', day: '乙亥' } };
+    const r = await runCareerOnce(chart);
+    expect(r.data).toBeNull();
+    expect(r.defects).toHaveLength(1);
+    expect(r.defects[0]).toMatch(/四柱/);
+    // 不能出现英文 undefined，也不能归因成「模型改写」
+    expect(r.defects[0]).not.toMatch(/undefined/);
+    expect(r.defects[0]).not.toMatch(/被改写/);
+    expect(client.callMiniMax).not.toHaveBeenCalled();
+  });
+
+  test('命盘四柱的值是空串时同样归因为缺少四柱', async () => {
+    client.callMiniMax.mockResolvedValue('{}');
+    client.parseLLMJson.mockReturnValue(JSON.parse(JSON.stringify(SAMPLE)));
+    const chart = { pillars: { year: '戊辰', month: '己未', day: '乙亥', hour: '   ' } };
+    const r = await runCareerOnce(chart);
+    expect(r.data).toBeNull();
+    expect(r.defects[0]).toMatch(/四柱/);
+    expect(client.callMiniMax).not.toHaveBeenCalled();
+  });
 });
 
 describe('四柱键名的唯一来源', () => {
   test('四柱键名从 core/interactions 引入，不在 run.js 里写死', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'career', 'run.js'), 'utf8');
-    expect(src).toContain("require('../core/interactions')");
+    // 用 require.resolve 定位「真正被加载的那份」run.js ——
+    // 变异验证会把改坏的副本映射成这个模块，源码扫描必须扫同一份，
+    // 否则这条守门在变异下永远看不见（= 没有判别力）。
+    const src = fs.readFileSync(require.resolve('../src/career/run'), 'utf8');
+    // 只看模块名，不看 require 的具体写法（变异工具会把相对路径改写成绝对路径）
+    expect(src).toMatch(/core\/interactions/);
     expect(src).not.toMatch(/\[\s*'year'\s*,\s*'month'\s*,\s*'day'\s*,\s*'hour'\s*\]/);
   });
 });
