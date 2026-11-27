@@ -364,11 +364,13 @@ describe('会话的其余守门', () => {
   test('访问会话会刷新最后活跃时间（TTL 按闲置算，不是按创建时间）', async () => {
     const created = await request(app).post('/api/session').send(VALID_BODY);
     const id = created.body.sessionId;
-    // 假装这个会话已经创建很久、但刚刚被访问过
-    app.locals.sessions.get(id).lastActiveAt = Date.now() - 1000;
+    // 假装这个会话已经创建很久、但 1 分钟前才被访问过
+    app.locals.sessions.get(id).lastActiveAt = Date.now() - 60000;
     app.locals.sessions.get(id).createdAt = Date.now() - 7200000;
     const res = await request(app).get(`/api/session/${id}/status`);
     expect(res.status).toBe(200);
+    // 访问之后 lastActiveAt 必须被推到「刚刚」——
+    // 断言值必须比「没刷新时的值」更严格，否则去掉刷新逻辑也照样绿（= 没有判别力）。
     expect(app.locals.sessions.get(id).lastActiveAt).toBeGreaterThan(Date.now() - 5000);
   });
 });
