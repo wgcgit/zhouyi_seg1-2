@@ -295,6 +295,10 @@ const CASES = {
         "if (!pillars || typeof pillars !== 'object') return false;\n  for (const k of PILLAR_KEYS) {\n    if (typeof pillars[k] !== 'string' || !pillars[k].trim()) return false;\n  }",
         "if (!pillars || typeof pillars !== 'object') return false;",
       ]] },
+      { name: 'M6 [终审] 确定性缺陷不再提前返回（恢复成重试三轮）', pairs: [[
+        "    if (r.fatal) {\n      console.error('事业推理结果不符合契约（本地检查判定，不再重试）:', defects.join('、'));\n      return { data: null, prose: '', parsed, defects, fatal: true };\n    }",
+        '    // 变异：去掉 fatal 提前返回',
+      ]] },
     ],
   },
   contract: {

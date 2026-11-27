@@ -112,7 +112,14 @@ async function runCareerOnce(chart, options) {
   // 这个检查是纯本地的 ⇒ 放在调模型之前，不浪费一次大模型调用。
   const chartPillars = chart && chart.pillars;
   if (!hasCompletePillars(chartPillars)) {
-    return { data: null, parsed: true, defects: ['缺少离线命盘的四柱，无法核对模型输出'] };
+    // fatal = 这是**纯本地就能判定**的确定性缺陷，重试没有意义
+    //（重试三轮只会刷出三条一模一样的日志，却一次模型都不会调）。
+    return {
+      data: null,
+      parsed: true,
+      fatal: true,
+      defects: ['缺少离线命盘的四柱，无法核对模型输出'],
+    };
   }
 
   let raw;
@@ -175,6 +182,12 @@ async function runCareerRounds(chart, options) {
     }
     parsed = r.parsed;
     defects = r.defects;
+    // 确定性缺陷（fatal）：重试没有意义 —— 命盘缺四柱这类问题不会因为再问一次模型而好转。
+    // 直接停下并记一条日志，别刷三条一模一样的。
+    if (r.fatal) {
+      console.error('事业推理结果不符合契约（本地检查判定，不再重试）:', defects.join('、'));
+      return { data: null, prose: '', parsed, defects, fatal: true };
+    }
     // 日志只打缺陷字段路径与轮次，**不打模型原始输出**（可能很长，也可能含用户隐私）。
     const shown = defects.slice(0, MAX_LOG_DEFECTS);
     const more = defects.length > shown.length ? `（共 ${defects.length} 条，只列前 ${shown.length} 条）` : '';

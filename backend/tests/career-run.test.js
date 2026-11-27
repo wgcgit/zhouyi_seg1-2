@@ -183,6 +183,30 @@ describe('阶段二的调用与校验', () => {
     expect(r.defects[0]).toMatch(/四柱/);
     expect(client.callMiniMax).not.toHaveBeenCalled();
   });
+
+  /**
+   * 确定性缺陷**不该被重试**。
+   *
+   * 命盘缺四柱是纯本地就能判定的问题，再问几次模型也不会好转 ——
+   * 但重试循环会照跑三轮，刷出三条一模一样的错误日志，
+   * 让人以为「跑了三次都失败」而误判成模型不稳定。
+   */
+  test('命盘缺四柱时不重试：只记一条日志，且结果标记为 fatal', async () => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      client.callMiniMax.mockResolvedValue('{}');
+      client.parseLLMJson.mockReturnValue(JSON.parse(JSON.stringify(SAMPLE)));
+      const r = await runCareerRounds({}, { maxRounds: 3, callLLM: client.callMiniMax });
+      expect(r.data).toBeNull();
+      expect(r.fatal).toBe(true);
+      expect(r.defects[0]).toMatch(/四柱/);
+      // 关键断言：只记一条日志（不是三条），且一次模型都没调
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(client.callMiniMax).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('四柱键名的唯一来源', () => {
