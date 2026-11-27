@@ -29,14 +29,19 @@ npm --prefix backend start
 
 ## 环境变量
 
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `MINIMAX_API_KEY` | 是 | MiniMax 的 API Key，只从环境变量读，不进 Git |
-| `MINIMAX_MODEL` | 否 | 默认 `MiniMax-M3` |
-| `MINIMAX_CAREER_ROUNDS` | 否 | 阶段二契约层重试轮数，默认 `3` |
-| `PORT` | 否 | 默认 `3000` |
+| 变量 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `MINIMAX_API_KEY` | 是 | 无 | MiniMax 的 API Key，只从环境变量读，不进 Git |
+| `MINIMAX_MODEL` | 否 | `MiniMax-M3` | 调用的模型名 |
+| `MINIMAX_THINKING` | 否 | `disabled` | 深度思考开关；开启会吃掉 max_tokens 预算，把 JSON 截断 |
+| `MINIMAX_MAX_TOKENS` | 否 | `32768` | 单次响应上限。阶段二输出约 4k 字符，默认值够用 |
+| `MINIMAX_MAX_ATTEMPTS` | 否 | `3` | 客户端内部对网络类错误的重试次数 |
+| `MINIMAX_TIMEOUT_MS` | 否 | `300000` | 单次请求超时（毫秒） |
+| `MINIMAX_CAREER_ROUNDS` | 否 | `3` | 阶段二契约层重试轮数 |
+| `PORT` | 否 | `3000` | 监听端口 |
 
 `backend/.env` **不进 Git**（已在 `.gitignore` 里），只在本地放一份。
+上面这张表与 `backend/.env.example` 逐项对齐。
 
 ## 前端页面
 
@@ -111,10 +116,41 @@ case → monthCommand → pattern → patternTracks → careerPhases → tiaoHou
 `backend/prompts/CAREER_SCHEMA.md` 由 `npm run build:schema` 生成。
 **改契约改源文件，然后重新生成并跑 `npm run validate:schema`。**
 
+## 接口契约
+
+```
+POST /api/session          → 202 { success, sessionId, status:'pending', chart } | 400 {success:false, errors:[...]}
+GET  /api/session/:id/status → 200 { success, sessionId, status:'pending'|'ready'|'error', error? } | 404
+GET  /api/session/:id/chart  → 200 { success, chart } | 404
+GET  /api/session/:id/career → 200 { success, career:{json, prose} } | 404
+POST /api/chat             → 200 { success, answer } | 400 | 404 | 409 | 500
+```
+
+错误响应一律 `{ success:false, errors:[...] }`。**404 有三种文案**，按场景区分：
+
+| 场景 | 文案 |
+|---|---|
+| 会话不存在或已过期（四个 `/api/session/:id/*` 路由与 `/api/chat` 共用） | `会话不存在或已过期` |
+| 会话还在算阶段二（`GET /:id/career`） | `事业推理尚未完成` |
+| 会话还在算阶段二（`POST /api/chat` 返回 409） | `事业推理尚未完成，请稍后再问` |
+
+此外 `GET /:id/career` 在**阶段二失败**（会话 `status='error'`）时也返回 404，
+但文案是 `session.error` 本身（例如 `大模型返回的事业推理结果不完整，请稍后重试`），
+不是上面两句里的任何一句。前端 `result.js` 按 404 的文案分流 ⇒ **这些文案逐字不能改**。
+
 ## 部署约束
 
+- **部署包必须包含仓库根的 `docs/` 目录**（即 `docs/CAREER_SCHEMA.md`）。
+  阶段二的 13 键契约常量在运行时从**这个文件**解析（`backend/prompts/CAREER_SCHEMA.md`
+  只是它的生成物，不能拿来兜底，否则契约源与生成物会静默分叉）。
+  只打包 `backend/` 目录 ⇒ 进程启动即崩，错误文案会明确提示
+  「契约源文件缺失：找不到 …/docs/CAREER_SCHEMA.md」。
 - 长请求会被边缘代理中断 ⇒ 阶段二**必须**异步 + 轮询（本设计已满足）。
 - `backend/.env` 不进 Git；`MINIMAX_API_KEY` 只从环境变量读。
 - 模型：`MINIMAX_MODEL` 默认 `MiniMax-M3`，`MINIMAX_THINKING` 默认 `disabled`
   （深度思考会吃掉 max_tokens 预算，把 JSON 截断）。
 - 阶段二输出较长，`MINIMAX_MAX_TOKENS` 可能需要上调。
+- 上下文实测：MiniMax-M3 上下文为 1M token（保证 512K 可用）；
+  阶段二 prompt 约 70,580 字符、阶段三 system prompt 约 13,222 字符，
+  都远在限内。阶段三的历史**不截断**（规格要求全量重发），
+  超出 120,000 字符预算时后端会返回 400 并提示刷新页面开新会话（不调模型）。

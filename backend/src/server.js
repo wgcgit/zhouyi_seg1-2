@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`周易之易 v2 服务运行在 http://localhost:${PORT}`);
+    console.log(`周易之易 · 事业推盘 服务运行在 http://localhost:${PORT}`);
   });
 }
 
