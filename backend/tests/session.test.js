@@ -224,3 +224,151 @@ describe('会话编排', () => {
     expect(status.body.status).toBe('pending');
   });
 });
+
+describe('会话的其余守门', () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    app = createApp();
+    runCareerRounds.mockResolvedValue({
+      data: { case: { gender: '男' } },
+      prose: '## 策略总纲\n底盘待机',
+      parsed: true,
+      defects: [],
+    });
+  });
+
+  /**
+   * D-4：两个路由的**命盘**必须逐字相同。
+   *
+   * 之前只比 errors（不存在的等价性），options 靠人工同步 ——
+   * 日后只改一边，两个路由的排盘结果会不一致，而测试查不出来。
+   * 这里比的是完整的 chart JSON（只排除生成时间戳，它本来就该不同）。
+   */
+  test('paipan 与 session 对同一份输入产出逐字相同的命盘', async () => {
+    // 刻意用**非默认**的流派开关：默认值下两个路由即使算错也会给出同一个结果，
+    // 那样这条断言就没有判别力。
+    const body = { ...VALID_BODY, trueSolarTime: false, dayBoundary: 1, qiyunMethod: 2 };
+    const paipanRes = await request(app).post('/api/paipan/chart').send(body);
+    const sessionRes = await request(app).post('/api/session').send(body);
+    expect(paipanRes.status).toBe(200);
+    expect(sessionRes.status).toBe(202);
+
+    const a = JSON.parse(JSON.stringify(paipanRes.body.data));
+    const b = JSON.parse(JSON.stringify(sessionRes.body.chart));
+    // 生成时间戳是「算这张盘的时刻」，两个请求必然不同 —— 排除它，其余逐字比
+    delete a.meta.generatedAt;
+    delete b.meta.generatedAt;
+    expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+
+    // 顺带钉住「开关真的生效了」：默认 dayBoundary 是 2（00:00 换日），
+    // 传 1 必须变成 23:00 换日 —— 否则「两个路由相同」可能只是两边都用了默认值。
+    expect(b.settings.dayBoundary).toBe('23:00 换日');
+    expect(b.settings.qiyunMethod).toBe('精确分钟折算');
+  });
+
+  /**
+   * D-5：排盘**失败**分支（格式合法但查不到城市经纬度）。
+   *
+   * 之前的 BAD_CASES 只覆盖「格式非法」，buildChart 抛错这一支没有任何用例。
+   */
+  test('查不到城市经纬度时返回 400、中文错误，且不创建会话', async () => {
+    const before = app.locals.sessions.size;
+    const res = await request(app)
+      .post('/api/session')
+      .send({ ...VALID_BODY, province: '不存在省', city: '不存在市' });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    // 会话没被创建：会话表长度不变
+    expect(app.locals.sessions.size).toBe(before);
+  });
+
+  /** D-6：GET /:id/chart 的 404 分支（之前只有 status 路由被钉住） */
+  test('会话不存在时 GET /:id/chart 返回 404 与中文错误', async () => {
+    const res = await request(app).get('/api/session/no-such-session/chart');
+    expect(res.status).toBe(404);
+    expect(res.body.errors[0]).toBe('会话不存在或已过期');
+  });
+
+  /** D-2：追加历史时的单条消息长度上限 */
+  test('追加历史时消息超长返回 400 与中文错误', async () => {
+    const created = await request(app).post('/api/session').send(VALID_BODY);
+    const id = created.body.sessionId;
+    const res = await request(app)
+      .post(`/api/session/${id}/history`)
+      .send({ role: 'user', content: '字'.repeat(2001) });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errors[0]).toMatch(/[一-龥]/);
+    expect(res.body.errors[0]).toMatch(/长度/);
+    // 超长的消息没被写进历史
+    const hist = await request(app).get(`/api/session/${id}/history`);
+    expect(hist.body.history).toHaveLength(0);
+  });
+
+  test('追加历史时消息刚好 2000 字是允许的（边界）', async () => {
+    const created = await request(app).post('/api/session').send(VALID_BODY);
+    const res = await request(app)
+      .post(`/api/session/${created.body.sessionId}/history`)
+      .send({ role: 'user', content: '字'.repeat(2000) });
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+  });
+
+  /** N-1：会话编号必须是密码学随机的、且互不重复 */
+  test('会话编号是随机 UUID，且两次提交不重复', async () => {
+    const a = await request(app).post('/api/session').send(VALID_BODY);
+    const b = await request(app).post('/api/session').send(VALID_BODY);
+    expect(a.body.sessionId).not.toBe(b.body.sessionId);
+    // 旧实现是 Date.now() + Math.random()，不是 UUID 形态
+    expect(a.body.sessionId).toMatch(/^sess_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
+  /** N-2：TTL 按「闲置」算，且 pending 会话也纳入过期 */
+  test('闲置超过 TTL 的会话（含 pending）会被清理', () => {
+    const { sweepExpiredSessions } = require('../src/routes/session');
+    const id = 'sess_ttl_pending';
+    app.locals.sessions.set(id, {
+      id,
+      status: 'pending',
+      createdAt: Date.now() - 7200000,
+      lastActiveAt: Date.now() - 7200000,
+      chart: null,
+      career: null,
+      error: null,
+      history: [],
+    });
+    sweepExpiredSessions(Date.now());
+    expect(app.locals.sessions.has(id)).toBe(false);
+  });
+
+  test('闲置未超过 TTL 的会话保留', () => {
+    const { sweepExpiredSessions } = require('../src/routes/session');
+    const id = 'sess_ttl_alive';
+    app.locals.sessions.set(id, {
+      id,
+      status: 'ready',
+      createdAt: Date.now() - 7200000,
+      lastActiveAt: Date.now() - 60000,
+      chart: null,
+      career: null,
+      error: null,
+      history: [],
+    });
+    sweepExpiredSessions(Date.now());
+    expect(app.locals.sessions.has(id)).toBe(true);
+  });
+
+  test('访问会话会刷新最后活跃时间（TTL 按闲置算，不是按创建时间）', async () => {
+    const created = await request(app).post('/api/session').send(VALID_BODY);
+    const id = created.body.sessionId;
+    // 假装这个会话已经创建很久、但刚刚被访问过
+    app.locals.sessions.get(id).lastActiveAt = Date.now() - 1000;
+    app.locals.sessions.get(id).createdAt = Date.now() - 7200000;
+    const res = await request(app).get(`/api/session/${id}/status`);
+    expect(res.status).toBe(200);
+    expect(app.locals.sessions.get(id).lastActiveAt).toBeGreaterThan(Date.now() - 5000);
+  });
+});

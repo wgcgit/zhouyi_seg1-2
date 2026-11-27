@@ -5,6 +5,7 @@ const { buildChart, CONTRACT_FIELDS } = require('../chart/build');
 const { listAllKeys, CITY_COUNT } = require('../geo');
 const { normalizeInput } = require('./normalize-input');
 const { chineseError, CHART_ERROR_FALLBACK } = require('./error-text');
+const { chartOptionsFrom } = require('./chart-options');
 
 const router = express.Router();
 
@@ -18,12 +19,8 @@ router.post('/chart', (req, res) => {
     return res.status(400).json({ success: false, errors });
   }
   try {
-    const options = {
-      trueSolarTime: req.body.trueSolarTime === undefined ? true : !!req.body.trueSolarTime,
-      dayBoundary: req.body.dayBoundary === 1 ? 1 : 2,
-      qiyunMethod: req.body.qiyunMethod === 2 ? 2 : 1,
-    };
-    const chart = buildChart(input, options);
+    // options 来自共享模块（与 session 路由同一份），保证两个路由排出同一个命盘。
+    const chart = buildChart(input, chartOptionsFrom(req.body));
     res.json({ success: true, data: chart });
   } catch (err) {
     // 第三方库的英文原文不直接透给用户；已经是中文的具体原因原样保留

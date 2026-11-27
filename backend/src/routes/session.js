@@ -1,9 +1,12 @@
 'use strict';
 
+const crypto = require('crypto');
 const express = require('express');
 const { buildChart } = require('../chart/build');
 const { normalizeInput } = require('./normalize-input');
 const { chineseError, CHART_ERROR_FALLBACK } = require('./error-text');
+const { API_ERRORS, MAX_MESSAGE_LENGTH } = require('./api-errors');
+const { chartOptionsFrom } = require('./chart-options');
 const { runCareerRounds } = require('../career/run');
 
 const router = express.Router();
@@ -16,21 +19,41 @@ const SESSIONS = new Map();
 const SESSION_TTL_MS = 60 * 60 * 1000;
 
 function newSessionId() {
-  return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+  return 'sess_' + crypto.randomUUID();
 }
 
+/**
+ * 取会话，并把「最后活跃时间」刷新到现在。
+ *
+ * TTL 按**闲置**时间算（每次访问都续期），而不是「创建后满 1 小时」——
+ * 否则用户连续聊一小时，会话在聊天中途就过期了。
+ *
+ * @param {string} id 会话编号
+ * @returns {object|null} 会话；不存在时返回 null
+ */
 function getSession(id) {
-  return SESSIONS.get(id) || null;
+  const session = SESSIONS.get(id);
+  if (!session) return null;
+  session.lastActiveAt = Date.now();
+  return session;
 }
 
-/** 定期清理过期会话。 */
-setInterval(() => {
-  const now = Date.now();
+/**
+ * 清理闲置超过 TTL 的会话（含 pending 的）。
+ *
+ * pending 会话也要纳入过期：阶段二挂了以后会话永远停在 pending，
+ * 不清理的话它会一直占着内存。
+ *
+ * @param {number} now 当前时间戳
+ */
+function sweepExpiredSessions(now) {
   for (const [id, s] of SESSIONS) {
-    if (s.status === 'pending') continue;
-    if (now - s.createdAt > SESSION_TTL_MS) SESSIONS.delete(id);
+    const lastActiveAt = typeof s.lastActiveAt === 'number' ? s.lastActiveAt : s.createdAt;
+    if (now - lastActiveAt > SESSION_TTL_MS) SESSIONS.delete(id);
   }
-}, 5 * 60 * 1000).unref();
+}
+
+setInterval(() => sweepExpiredSessions(Date.now()), 5 * 60 * 1000).unref();
 
 /**
  * POST /api/session
@@ -44,13 +67,9 @@ router.post('/', async (req, res) => {
 
   let chart;
   try {
-    chart = buildChart(input, {
-      trueSolarTime: req.body.trueSolarTime === undefined ? true : !!req.body.trueSolarTime,
-      dayBoundary: req.body.dayBoundary === 1 ? 1 : 2,
-      qiyunMethod: req.body.qiyunMethod === 2 ? 2 : 1,
-    });
+    chart = buildChart(input, chartOptionsFrom(req.body));
   } catch (error) {
-    console.error('离线排盘失败:', chineseError(error && error.message, CHART_ERROR_FALLBACK));
+    console.error(API_ERRORS.LOG_CHART_FAILED, chineseError(error && error.message, CHART_ERROR_FALLBACK));
     return res.status(400).json({
       success: false,
       errors: [chineseError(error && error.message, CHART_ERROR_FALLBACK)],
@@ -62,6 +81,7 @@ router.post('/', async (req, res) => {
     id: sessionId,
     status: 'pending',
     createdAt: Date.now(),
+    lastActiveAt: Date.now(),
     chart,
     career: null,
     error: null,
@@ -76,20 +96,18 @@ router.post('/', async (req, res) => {
     .then((result) => {
       if (!result.data) {
         session.status = 'error';
-        session.error = result.parsed
-          ? '大模型返回的事业推理结果不完整，请稍后重试'
-          : '大模型返回内容无法解析，请稍后重试';
+        session.error = result.parsed ? API_ERRORS.CAREER_INCOMPLETE : API_ERRORS.CAREER_UNPARSABLE;
         return;
       }
       session.career = { json: result.data, prose: result.prose };
       session.status = 'ready';
     })
     .catch((error) => {
-      console.error('事业推理失败:', chineseError(error && error.message, '事业推理失败，请稍后重试'));
+      console.error(API_ERRORS.LOG_CAREER_FAILED, chineseError(error && error.message, API_ERRORS.CAREER_FAILED));
       session.status = 'error';
       session.error = chineseError(
         (error && error.message) || String(error),
-        '事业推理失败，请稍后重试',
+        API_ERRORS.CAREER_FAILED,
       );
     });
 
@@ -101,7 +119,7 @@ router.post('/', async (req, res) => {
 router.get('/:id/status', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) {
-    return res.status(404).json({ success: false, errors: ['会话不存在或已过期'] });
+    return res.status(404).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });
   }
   res.json({
     success: true,
@@ -115,7 +133,7 @@ router.get('/:id/status', (req, res) => {
 router.get('/:id/chart', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) {
-    return res.status(404).json({ success: false, errors: ['会话不存在或已过期'] });
+    return res.status(404).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });
   }
   res.json({ success: true, chart: session.chart });
 });
@@ -124,12 +142,16 @@ router.get('/:id/chart', (req, res) => {
 router.get('/:id/career', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) {
-    return res.status(404).json({ success: false, errors: ['会话不存在或已过期'] });
+    return res.status(404).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });
   }
   if (!session.career) {
     return res.status(404).json({
       success: false,
-      errors: [session.status === 'error' ? (session.error || '事业推理失败') : '事业推理尚未完成'],
+      errors: [
+        session.status === 'error'
+          ? (session.error || API_ERRORS.CAREER_FAILED)
+          : API_ERRORS.SESSION_CAREER_PENDING,
+      ],
     });
   }
   res.json({ success: true, career: session.career });
@@ -139,7 +161,7 @@ router.get('/:id/career', (req, res) => {
 router.get('/:id/history', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) {
-    return res.status(404).json({ success: false, errors: ['会话不存在或已过期'] });
+    return res.status(404).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });
   }
   res.json({ success: true, history: session.history });
 });
@@ -148,12 +170,17 @@ router.get('/:id/history', (req, res) => {
 router.post('/:id/history', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) {
-    return res.status(404).json({ success: false, errors: ['会话不存在或已过期'] });
+    return res.status(404).json({ success: false, errors: [API_ERRORS.SESSION_NOT_FOUND] });
   }
   const role = req.body && req.body.role;
   const content = req.body && req.body.content;
   if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string' || !content.trim()) {
-    return res.status(400).json({ success: false, errors: ['消息格式不正确'] });
+    return res.status(400).json({ success: false, errors: [API_ERRORS.HISTORY_FORMAT_INVALID] });
+  }
+  // 单条消息长度上限：历史条数不限（规格要求全量重发），
+  // 但**单条**消息必须有闸，否则一条 10MB 的消息就能把 prompt 撑爆。
+  if (content.trim().length > MAX_MESSAGE_LENGTH) {
+    return res.status(400).json({ success: false, errors: [API_ERRORS.MESSAGE_TOO_LONG] });
   }
   session.history.push({ role, content: content.trim() });
   res.json({ success: true, count: session.history.length });
@@ -162,3 +189,6 @@ router.post('/:id/history', (req, res) => {
 module.exports = router;
 // 会话表共享给 chat 路由（app.locals.sessions = sessionRouter.SESSIONS）
 module.exports.SESSIONS = SESSIONS;
+// 过期清理抽成函数，便于测试直接驱动（不靠等 5 分钟的定时器）
+module.exports.sweepExpiredSessions = sweepExpiredSessions;
+module.exports.SESSION_TTL_MS = SESSION_TTL_MS;
