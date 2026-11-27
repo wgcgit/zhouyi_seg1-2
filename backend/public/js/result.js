@@ -44,6 +44,100 @@
   }
 
   /**
+   * 行内标记：**加粗** → <strong>。
+   *
+   * 入参**必须已经过 esc()** —— 因为它会往文本里插标签，
+   * 没转义的文本就等于开了一个 XSS 口子。
+   *
+   * @param {string} escaped 已转义的行内文本
+   * @returns {string}
+   */
+  function inlineMarkdown(escaped) {
+    return String(escaped).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+
+  /**
+   * 极简 Markdown → HTML。
+   *
+   * 只认三样东西（服务端 render.js 就只产出这三样）：
+   *   - `## 标题` / `### 小标题` → 标题
+   *   - `- 条目`                   → 无序列表
+   *   - 其余每一行                → 段落（同一段里的多行用 <br> 连起来）
+   *
+   * ⚠️ **安全顺序**：先对整行做 esc()，再套标签。
+   *    esc() 之后文本里不可能再有 `<` `>`，所以插进去的标签是安全的；
+   *    反过来做（先套标签再转义）会把标签本身也转义掉。
+   *
+   * @param {string} markdown 散文（Markdown）
+   * @returns {string} HTML
+   */
+  function renderMarkdown(markdown) {
+    const lines = String(markdown === null || markdown === undefined ? '' : markdown).split(/\r?\n/);
+    const blocks = [];
+    let para = [];
+    let list = [];
+
+    function flushPara() {
+      if (para.length) {
+        blocks.push('<p class="mt-2 mb-0">' + para.join('<br>') + '</p>');
+        para = [];
+      }
+    }
+    function flushList() {
+      if (list.length) {
+        blocks.push(
+          '<ul class="mt-2 mb-2 list-disc pl-6">'
+          + list.map((li) => '<li class="my-0.5">' + li + '</li>').join('')
+          + '</ul>',
+        );
+        list = [];
+      }
+    }
+
+    for (const raw of lines) {
+      // 先转义，后面所有插标签的操作都在已转义的文本上进行
+      const escaped = esc(raw);
+      const t = escaped.trim();
+      if (!t) {
+        // 空行 = 段落分隔
+        flushPara();
+        flushList();
+        continue;
+      }
+      const heading = /^(#{2,3})\s+(.*)$/.exec(t);
+      if (heading) {
+        flushPara();
+        flushList();
+        // 类名写成**完整字面量**：前端冒烟脚本的「死类扫描」是按 class 属性
+        // 抠类名的，把类名拆成变量拼接会被它抠出一堆 '+' / 变量名当类名。
+        if (heading[1].length === 2) {
+          blocks.push(
+            '<h2 class="font-title-md text-title-md text-primary mt-7 mb-2 first:mt-0">'
+            + inlineMarkdown(heading[2]) + '</h2>',
+          );
+        } else {
+          blocks.push(
+            '<h3 class="font-title-md text-title-md text-on-surface mt-5 mb-1 first:mt-0">'
+            + inlineMarkdown(heading[2]) + '</h3>',
+          );
+        }
+        continue;
+      }
+      const item = /^[-*]\s+(.*)$/.exec(t);
+      if (item) {
+        flushPara();
+        list.push(inlineMarkdown(item[1]));
+        continue;
+      }
+      flushList();
+      para.push(inlineMarkdown(t));
+    }
+    flushPara();
+    flushList();
+    return blocks.join('');
+  }
+
+  /**
    * 渲染命盘。优先用 app.js 的 renderChart（它负责解开 #chartSection 的 hidden）；
    * 没有 app.js 时（理论上只有 career.html，而它不走这条路径）才本地拼。
    */
@@ -83,8 +177,11 @@
       + `<summary class="font-label-sm text-label-sm text-primary cursor-pointer">结构化 JSON</summary>`
       + `<pre class="mt-3 overflow-x-auto text-xs">${esc(JSON.stringify(career.json, null, 2))}</pre>`
       + `</details>`
-      // 散文是带换行的纯文本，用 whitespace-pre-wrap 保留换行（没有 typography 插件，不能用 prose-*）
-      + `<div class="glass-card rounded-2xl p-4 whitespace-pre-wrap text-body-md font-body-md">${esc(career.prose)}</div>`;
+      // 散文是 Markdown，走 renderMarkdown 渲染（内部先 esc() 再套标签）。
+      // 没有 typography 插件，不能用 prose-*。
+      + `<div class="glass-card rounded-2xl p-4 text-body-md font-body-md text-on-surface">`
+      + renderMarkdown(career.prose)
+      + `</div>`;
   }
 
   async function loadCareer() {
@@ -115,5 +212,5 @@
   // 本文件整体包在 IIFE 里，外部拿不到内部函数；
   // 冒烟脚本要真正执行这里的渲染逻辑来验证大模型内容的转义，
   // 所以在 IIFE 内部挂一个钩子。名字与 app.js 的顶层变量不冲突。
-  window.__resultTest = { esc, renderCareer };
+  window.__resultTest = { esc, renderCareer, renderMarkdown, inlineMarkdown };
 })();

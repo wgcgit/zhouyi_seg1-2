@@ -394,6 +394,21 @@ section('3b. 大模型内容渲染路径（真正执行 chat.js / result.js）')
       '事业页渲染结果里没有看到 "<script" 的转义形式 &lt;script');
     check(resultTest.esc(null) === '', 'result.js 的 esc(null) 必须返回空串，不能是 "null"');
     check(resultTest.esc(undefined) === '', 'result.js 的 esc(undefined) 必须返回空串，不能是 "undefined"');
+
+    // 散文是 Markdown，前端要渲染成 HTML（标题/列表/加粗）——
+    // 但渲染器先转义再套标签，顺序不能反。
+    if (typeof resultTest.renderMarkdown === 'function') {
+      const md = resultTest.renderMarkdown('## 月令与格局\n水（印）、木（比劫）。\n\n## 大运\n  - 2020年 动手\n**重点**');
+      check(md.includes('<h2'), '散文的「## 标题」没有渲染成 h2');
+      check(md.includes('<ul') && md.includes('<li'), '散文的「- 条目」没有渲染成列表');
+      check(md.includes('<strong>重点</strong>'), '散文的「**加粗**」没有渲染成 strong');
+      check(!md.includes('## '), '散文渲染后还留着「## 」标记');
+      const mdXss = resultTest.renderMarkdown('## <img src=x onerror=alert(1)>\n- <script>alert(1)</script>');
+      check(!mdXss.includes('<img') && !mdXss.includes('<script'),
+        '散文渲染里出现了未转义的标签（散文来自大模型，这是存储型 XSS）');
+    } else {
+      check(false, 'result.js 没有挂出 renderMarkdown（散文的 Markdown 渲染器不见了）');
+    }
   }
 }
 
